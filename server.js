@@ -134,9 +134,9 @@ function logTransaction(data) {
 const receivingWallets = {
     // Ethereum (ERC-20)
     ETH: process.env.RECEIVING_WALLET_ETH,
-    USDC: process.env.RECEIVING_WALLET_USDC,
+    USDC: process.env.RECEIVING_WALLET_USDC_ERC20,
     DAI: process.env.RECEIVING_WALLET_DAI,
-    USDT: process.env.RECEIVING_WALLET_USDT,
+    USDT: process.env.RECEIVING_WALLET_USDT_ERC20,
     LINK: process.env.RECEIVING_WALLET_LINK,
     UNI: process.env.RECEIVING_WALLET_UNI,
     WBTC: process.env.RECEIVING_WALLET_WBTC,
@@ -156,8 +156,8 @@ const receivingWallets = {
     
     // TRON (TRC-20)
     TRX: process.env.RECEIVING_WALLET_TRX,
-    USDT_TRC20: process.env.RECEIVING_WALLET_USDT,
-    USDC_TRC20: process.env.RECEIVING_WALLET_USDC,
+    USDT_TRC20: process.env.RECEIVING_WALLET_USDT_TRC20,
+    USDC_TRC20: process.env.RECEIVING_WALLET_USDC_TRC20,
     BTT: process.env.RECEIVING_WALLET_BTT,
 };
 
