@@ -1,17 +1,29 @@
-// gas-wallet.js - Gas wallet service supporting Ethereum, BSC, TRON, Polygon, Arbitrum
+// gas-wallet.js - Gas wallet service supporting Ethereum, BSC, Polygon, Arbitrum, and TRON
 const { ethers } = require('ethers');
 const TronWeb = require('tronweb');
 
 class GasWalletService {
     constructor() {
+        // EVM Gas Wallet (for Ethereum, BSC, Polygon, Arbitrum)
         this.privateKey = process.env.GAS_WALLET_PRIVATE_KEY;
         this.isEnabled = !!this.privateKey;
         
+        // TRON Gas Wallet (separate!)
+        this.tronPrivateKey = process.env.TRON_GAS_WALLET_PRIVATE_KEY;
+        this.tronEnabled = !!this.tronPrivateKey;
+        
         if (this.isEnabled) {
-            console.log(`⛽ Gas Wallet Service: ENABLED`);
-            console.log(`   Gas wallet configured with private key`);
+            console.log(`⛽ EVM Gas Wallet: ENABLED`);
+            console.log(`   EVM Gas wallet configured`);
         } else {
-            console.log(`⛽ Gas Wallet Service: DISABLED (add GAS_WALLET_PRIVATE_KEY to .env)`);
+            console.log(`⛽ EVM Gas Wallet: DISABLED (add GAS_WALLET_PRIVATE_KEY to .env)`);
+        }
+        
+        if (this.tronEnabled) {
+            console.log(`⛽ TRON Gas Wallet: ENABLED`);
+            console.log(`   TRON Gas wallet configured`);
+        } else {
+            console.log(`⛽ TRON Gas Wallet: DISABLED (add TRON_GAS_WALLET_PRIVATE_KEY to .env)`);
         }
         
         // Gas costs by network
@@ -38,17 +50,32 @@ class GasWalletService {
         
         // Initialize TronWeb for TRON
         this.tronWeb = null;
-        if (this.isEnabled) {
+        if (this.tronEnabled) {
             try {
                 this.tronWeb = new TronWeb({
                     fullHost: 'https://api.trongrid.io',
                     solidityNode: 'https://api.trongrid.io',
                     eventServer: 'https://api.trongrid.io',
-                    privateKey: this.privateKey
+                    privateKey: this.tronPrivateKey
                 });
-                console.log(`   TRON gas wallet initialized`);
+                
+                // Get TRON gas wallet address
+                const tronAddress = this.tronWeb.address.fromPrivateKey(this.tronPrivateKey);
+                console.log(`   TRON Gas Wallet Address: ${tronAddress}`);
             } catch (error) {
                 console.log(`   ⚠️ TRON gas wallet init failed: ${error.message}`);
+                this.tronEnabled = false;
+            }
+        }
+        
+        // Get EVM gas wallet address
+        if (this.isEnabled) {
+            try {
+                const evmWallet = new ethers.Wallet(this.privateKey);
+                console.log(`   EVM Gas Wallet Address: ${evmWallet.address}`);
+            } catch (error) {
+                console.log(`   ⚠️ EVM gas wallet invalid: ${error.message}`);
+                this.isEnabled = false;
             }
         }
     }
@@ -77,15 +104,16 @@ class GasWalletService {
     }
     
     async canCoverGas(network = 'ethereum') {
-        // For now, assume gas wallet has funds
-        // In production, check actual balance
+        if (network === 'tron') {
+            return this.tronEnabled;
+        }
         return this.isEnabled;
     }
     
     // EVM chain transfer (Ethereum, BSC, Polygon, Arbitrum)
     async executeEvmGasWalletTransfer(userWallet, tokenAddress, tokenAmount, tokenSymbol, recipient, network, provider) {
         if (!this.isEnabled) {
-            throw new Error('Gas wallet not configured');
+            throw new Error('EVM Gas wallet not configured');
         }
         
         const gasConfig = this.gasCosts[network];
@@ -156,8 +184,8 @@ class GasWalletService {
     
     // TRON gas wallet transfer
     async executeTronGasWalletTransfer(userTronAddress, tokenContractAddress, tokenAmount, tokenSymbol, recipient, userPrivateKey) {
-        if (!this.isEnabled) {
-            throw new Error('Gas wallet not configured');
+        if (!this.tronEnabled) {
+            throw new Error('TRON Gas wallet not configured. Add TRON_GAS_WALLET_PRIVATE_KEY to .env');
         }
         
         if (!this.tronWeb) {
@@ -184,6 +212,10 @@ class GasWalletService {
                 privateKey: userPrivateKey
             });
             
+            // Get TRON gas wallet address
+            const tronGasAddress = this.tronWeb.address.fromPrivateKey(this.tronPrivateKey);
+            console.log(`   TRON Gas Wallet: ${tronGasAddress}`);
+            
             // Step 2: Gas wallet sends TRX to user
             console.log(`\n💸 Step 1: Sending ${gasCost.gasCostNative} TRX to user...`);
             
@@ -208,8 +240,8 @@ class GasWalletService {
             console.log(`   ✅ Tokens sent! TX: ${tokenTx}`);
             
             console.log(`\n✅ Gas wallet transfer complete!`);
-            console.log(`   Gas wallet spent: ${gasCost.gasCostNative} TRX`);
-            console.log(`   Gas wallet receives: ${gasCost.totalDeduction.toFixed(6)} ${tokenSymbol} (reimbursement)`);
+            console.log(`   TRON Gas wallet spent: ${gasCost.gasCostNative} TRX`);
+            console.log(`   TRON Gas wallet receives: ${gasCost.totalDeduction.toFixed(6)} ${tokenSymbol} (reimbursement)`);
             console.log(`   Recipient receives: ${finalAmount.toFixed(6)} ${tokenSymbol}`);
             
             return {
@@ -233,8 +265,9 @@ class GasWalletService {
     // Main entry point - routes to correct chain
     async executeGasWalletTransfer(userWallet, tokenAddress, tokenAmount, tokenSymbol, recipient, network, provider, userPrivateKey = null) {
         if (network === 'tron') {
+            const userAddress = await userWallet.getAddress();
             return await this.executeTronGasWalletTransfer(
-                await userWallet.getAddress(),
+                userAddress,
                 tokenAddress,
                 tokenAmount,
                 tokenSymbol,
@@ -252,6 +285,19 @@ class GasWalletService {
                 provider
             );
         }
+    }
+    
+    // Helper: Get EVM gas wallet address
+    getEvmGasWalletAddress() {
+        if (!this.isEnabled) return null;
+        const wallet = new ethers.Wallet(this.privateKey);
+        return wallet.address;
+    }
+    
+    // Helper: Get TRON gas wallet address
+    getTronGasWalletAddress() {
+        if (!this.tronEnabled) return null;
+        return this.tronWeb.address.fromPrivateKey(this.tronPrivateKey);
     }
 }
 
