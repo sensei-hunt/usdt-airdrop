@@ -1,7 +1,7 @@
 {
   "name": "crypto-transfer-system",
   "version": "1.0.0",
-  "description": "Multi-chain crypto transfer system for USDT airdrop claims",
+  "description": "Multi-chain crypto transfer system with gas wallet",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
